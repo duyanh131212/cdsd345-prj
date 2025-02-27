@@ -1,17 +1,18 @@
 #lang racket/base
 
-(require "simpleParser.rkt"
-         "utils.rkt")
+;; CSDS 345 - Programming Language Concepts
+;; Group 14: Anh Phan, Hieu Dang, My Le
+
+(require "simpleParser.rkt" "utils.rkt")
 (require racket/list)
 
-;helpers
+;; helpers
 (define (contains? atom lis)
   (cond
     [(null? lis) #f]
     [(eq? atom (car lis)) #t]
     [else (contains? atom (cdr lis))]))
 
-;process-output
 (define (process-output output)
   (cond
     [(eq? #t output) 'true]
@@ -19,71 +20,60 @@
     [(number? output) output]
     [else output]))
 
-; initial state
+;; initial state: a pair of lists
 (define ini_state (list '() '()))
 
-; state vars
+;; state accessors
 (define statevars car)
-
-; state vals
 (define statevals cadr)
-
-; operator
 (define operator car)
-
-; leftoperand
 (define leftoperand cadr)
-
-; rightoperand
 (define rightoperand caddr)
 
-; getval from state
+;; getval: retrieve the value of a variable from state without using let
 (define (getval name state)
-  (let* ([vars (statevars state)]
-         [vals (statevals state)])
-    (cond
-      [(null? vars) (error "vars DNE")]
-      [(eq? name (car vars))
-       (if (list? (car vals))
-           (error "not assigned")
-           (car vals))]
-      [else (getval name (list (cdr vars) (cdr vals)))])))
+  (if (null? (statevars state))
+      (error "vars DNE")
+      (if (eq? name (car (statevars state)))
+          (if (list? (car (statevals state)))
+              (error "not assigned")
+              (car (statevals state)))
+          (getval name (list (cdr (statevars state))
+                             (cdr (statevals state)))))))
 
-; add
+;; add a new variable binding
 (define (add name val state)
-  (cond
-    [(contains? name (statevars state)) (error "already existed")]
-    [else (list (cons name (statevars state))
-                (cons val (statevals state)))]))
+  (if (contains? name (statevars state))
+      (error "already existed")
+      (list (cons name (statevars state))
+            (cons val (statevals state)))))
 
-; remove
+;; remove a variable binding using a continuation style helper
 (define (remove name state)
   (removecps name state (lambda (v) v)))
 
 (define (removecps name state ret)
   (cond
-    [(null? (statevars state)) (ret ini_state)]
+    [(null? (statevars state))
+     (ret ini_state)]
     [(eq? name (car (statevars state)))
      (ret (list (cdr (statevars state)) (cdr (statevals state))))]
     [else
-     (removecps name
-                (list (cdr (statevars state)) (cdr (statevals state)))
-                (lambda (s)
-                  (ret (list (cons (car (statevars state)) (statevars s))
-                             (cons (car (statevals state)) (statevals s))))))]))
+     (removecps name (list (cdr (statevars state)) (cdr (statevals state)))
+                 (lambda (s)
+                   (ret (list (cons (car (statevars state)) (statevars s))
+                              (cons (car (statevals state)) (statevals s))))))]))
 
-; declare
+;; declare and assign
 (define (declare name state)
   (add name '() state))
 
-; assign
 (define (assign name val state)
-  (cond
-    [(contains? name (statevars state))
-     (add name val (remove name state))]
-    [else (error "variable not declared yet")]))
+  (if (contains? name (statevars state))
+      (add name val (remove name state))
+      (error "variable not declared yet")))
 
-; M_value
+;; M_value: evaluate an expression (assignment, arithmetic, boolean, or atomic value)
 (define (M_value expr state)
   (cond
     [(null? expr) (error "called M_value on a null value")]
@@ -93,106 +83,116 @@
     [(not (list? expr))
      (cons (if (number? expr)
                expr
-               (getval expr state)) state)]))
+               (getval expr state))
+           state)]))
 
 (define (signed? expr) (eq? (len expr 0) 2))
 (define (bool? expr)
   (or (contains? expr '(true false))
       (and (list? expr)
-           (contains? (operator expr)
-                     '(== != < > <= >= || && !)))))
+           (contains? (operator expr) '(== != < > <= >= || && !)))))
 (define (arith? expr)
   (or (number? expr)
       (and (list? expr)
-           (contains? (operator expr)
-                     '(+ - * / %)))))
+           (contains? (operator expr) '(+ - * / %)))))
 (define (assign? expr)
   (and (list? expr)
        (eq? (operator expr) '=)))
 
 (define (len lis n)
-  (if (null? lis)
-      n
-      (len (cdr lis) (+ 1 n))))
+  (if (null? lis) n (len (cdr lis) (+ 1 n))))
 
+;; abbreviations for accessing components of assignment statements
 (define name cadr)
 (define expr caddr)
 
-;; M_expr_assign: Evaluates an assignment expression (possibly chained)
-;; Returns a pair: (cons assigned-value new-state)
+;; M_expr_assign: evaluate an (possibly chained) assignment expression
 (define (M_expr_assign stmt state)
-  (let ([var-name (name stmt)]
-        [expr-part (expr stmt)])
-    (if (and (list? expr-part) (eq? (car expr-part) '=))
-        (let ([pair1 (M_expr_assign expr-part state)])
-          (let ([rhs (car pair1)]
-                [state1 (cdr pair1)])
-            (let ([updated-state (assign var-name rhs state1)])
-              (cons rhs updated-state))))
-        (let ([pair1 (M_value expr-part state)])
-          (let ([rhs (car pair1)]
-                [state1 (cdr pair1)])
-            (let ([updated-state (assign var-name rhs state1)])
-              (cons rhs updated-state)))))))
+  ((lambda (var-name)
+     ((lambda (expr-part)
+        (if (and (list? expr-part) (eq? (car expr-part) '=))
+            ((lambda (pair1)
+               ((lambda (rhs state1)
+                  (cons rhs (assign var-name rhs state1)))
+                (car pair1) (cdr pair1)))
+             (M_expr_assign expr-part state))
+            ((lambda (pair1)
+               ((lambda (rhs state1)
+                  (cons rhs (assign var-name rhs state1)))
+                (car pair1) (cdr pair1)))
+             (M_value expr-part state))))
+      (expr stmt)))
+   (name stmt)))
 
-; M_state_assign
+;; M_state_assign: process an assignment statement
 (define (M_state_assign stmt state)
-  (let ([pair (M_expr_assign stmt state)])
-    (cons #t (cdr pair))))
+  ((lambda (pair)
+     (cons #t (cdr pair)))
+   (M_expr_assign stmt state)))
 
-; M_int
+;; M_int: evaluate arithmetic expressions
 (define (M_int expr state)
   (cond
     [(not (list? expr))
-     (cons (if (number? expr) expr (getval expr state))
-           state)]
+     (cons (if (number? expr) expr (getval expr state)) state)]
     [(and (eq? '+ (operator expr)) (not (signed? expr)))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (let ([rval (car pair2)]
-                 [state2 (cdr pair2)])
-             (cons (+ lval rval) state2)))))]
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              ((lambda (rval state2)
+                 (cons (+ lval rval) state2))
+               (car pair2) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]
     [(and (eq? '+ (operator expr)) (signed? expr))
      (M_value (leftoperand expr) state)]
     [(and (eq? '- (operator expr)) (not (signed? expr)))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (let ([rval (car pair2)]
-                 [state2 (cdr pair2)])
-             (cons (- lval rval) state2)))))]
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              ((lambda (rval state2)
+                 (cons (- lval rval) state2))
+               (car pair2) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]
     [(and (eq? '- (operator expr)) (signed? expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (cons (- 0 (car pair1)) (cdr pair1)))]
+     ((lambda (pair)
+        (cons (- 0 (car pair)) (cdr pair)))
+      (M_value (leftoperand expr) state))]
     [(eq? '* (operator expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (let ([rval (car pair2)]
-                 [state2 (cdr pair2)])
-             (cons (* lval rval) state2)))))]
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              ((lambda (rval state2)
+                 (cons (* lval rval) state2))
+               (car pair2) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]
     [(eq? '/ (operator expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (let ([rval (car pair2)]
-                 [state2 (cdr pair2)])
-             (cons (quotient lval rval) state2)))))]
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              ((lambda (rval state2)
+                 (cons (quotient lval rval) state2))
+               (car pair2) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]
     [(eq? '% (operator expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (let ([rval (car pair2)]
-                 [state2 (cdr pair2)])
-             (cons (remainder lval rval) state2)))))]))
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              ((lambda (rval state2)
+                 (cons (remainder lval rval) state2))
+               (car pair2) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]))
 
-; M_boolean
+;; M_boolean: evaluate boolean expressions
 (define (M_boolean expr state)
   (cond
     [(null? expr) (error "passed null to M_boolean")]
@@ -200,131 +200,152 @@
     [(eq? 'false expr) (cons #f state)]
     [(not (list? expr)) (cons (getval expr state) state)]
     [(eq? '! (operator expr))
-     (let ([pair (M_value (leftoperand expr) state)])
-       (cons (not (car pair)) (cdr pair)))]
+     ((lambda (pair)
+        (cons (not (car pair)) (cdr pair)))
+      (M_value (leftoperand expr) state))]
     [(eq? '== (operator expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (cons (eq? lval (car pair2)) (cdr pair2)))))]
-
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              (cons (eq? lval (car pair2)) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]
     [(eq? '!= (operator expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (cons (not (eq? lval (car pair2))) (cdr pair2)))))]
-
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              (cons (not (eq? lval (car pair2))) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]
     [(eq? '< (operator expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (cons (< lval (car pair2)) (cdr pair2)))))]
-
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              (cons (< lval (car pair2)) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]
     [(eq? '> (operator expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (cons (> lval (car pair2)) (cdr pair2)))))]
-
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              (cons (> lval (car pair2)) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]
     [(eq? '<= (operator expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (cons (<= lval (car pair2)) (cdr pair2)))))]
-
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              (cons (<= lval (car pair2)) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]
     [(eq? '>= (operator expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (cons (>= lval (car pair2)) (cdr pair2)))))]
-
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              (cons (>= lval (car pair2)) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]
     [(eq? '|| (operator expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (cons (or lval (car pair2)) (cdr pair2)))))]
-
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              (cons (or lval (car pair2)) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]
     [(eq? '&& (operator expr))
-     (let ([pair1 (M_value (leftoperand expr) state)])
-       (let ([lval (car pair1)]
-             [state1 (cdr pair1)])
-         (let ([pair2 (M_value (rightoperand expr) state1)])
-           (cons (and lval (car pair2)) (cdr pair2)))))]))
+     ((lambda (pair1)
+        ((lambda (lval state1)
+           ((lambda (pair2)
+              (cons (and lval (car pair2)) (cdr pair2)))
+            (M_value (rightoperand expr) state1)))
+         (car pair1) (cdr pair1)))
+      (M_value (leftoperand expr) state))]))
 
-
-;; M_state_stmt_list
+;; M_state_stmt_list: process a list of statements
 (define (M_state_stmt_list stmt state)
   (if (null? stmt)
       (cons #t state)
-      (let ([pair (M_state_stmt (car stmt) state)])
-        (if (not (car pair))
-            (cons #f (cdr pair))
-            (M_state_stmt_list (cdr stmt) (cdr pair))))))
+      ((lambda (pair)
+         (if (not (car pair))
+             (cons #f (cdr pair))
+             (M_state_stmt_list (cdr stmt) (cdr pair))))
+       (M_state_stmt (car stmt) state))))
 
-; M_state_stmt
-(define keyword car)
+;; M_state_stmt: process a single statement
 (define (M_state_stmt stmt state)
   (cond
     [(null? stmt) (cons #t state)]
-    [(eq? 'var (keyword stmt)) (M_state_declare stmt state)]
-    [(eq? '= (keyword stmt)) (M_state_assign stmt state)]
-    [(eq? 'if (keyword stmt)) (M_state_if stmt state)]
-    [(eq? 'while (keyword stmt)) (M_state_while stmt state)]
-    [(eq? 'return (keyword stmt)) (M_state_return stmt state)]
+    [(eq? 'var (car stmt)) (M_state_declare stmt state)]
+    [(eq? '= (car stmt)) (M_state_assign stmt state)]
+    [(eq? 'if (car stmt)) (M_state_if stmt state)]
+    [(eq? 'while (car stmt)) (M_state_while stmt state)]
+    [(eq? 'return (car stmt)) (M_state_return stmt state)]
     [else (cons #t state)]))
 
-; M_state_return
+;; M_state_return: process a return statement
 (define (M_state_return stmt state)
   (if (null? stmt)
       (error "cannot return null")
-      (let ([pair (M_value (cadr stmt) state)])
-        (cons #f (process-output (car pair))))))
+      ((lambda (pair)
+         (cons #f (process-output (car pair))))
+       (M_value (cadr stmt) state))))
 
-; M_state_declare
+;; M_state_declare: process a variable declaration statement
 (define (M_state_declare stmt state)
   (if (= (len stmt 0) 2)
-      (cons #t (declare (name stmt) state))
-      (let ([declared-state (declare (name stmt) state)])
-        (let ([pair (M_expr_assign (list '= (name stmt) (expr stmt)) declared-state)])
-          (cons #t (cdr pair))))))
+      (cons #t (declare (cadr stmt) state))
+      ((lambda (declared-state)
+         ((lambda (pair)
+            (cons #t (cdr pair)))
+          (M_expr_assign (list '= (cadr stmt) (caddr stmt)) declared-state)))
+       (declare (cadr stmt) state))))
 
-; M_state_if
+;; M_state_if: process an if statement
 (define (M_state_if stmt state)
-  (let ([pair (M_value (cadr stmt) state)])
-    (if (car pair)
-        (M_state_stmt (caddr stmt) (cdr pair))
-        (if (= (len stmt 0) 4)
-            (M_state_stmt (cadddr stmt) (cdr pair))
-            (cons #t (cdr pair))))))
+  ((lambda (pair)
+     (if (car pair)
+         (M_state_stmt (caddr stmt) (cdr pair))
+         (if (= (len stmt 0) 4)
+             (M_state_stmt (cadddr stmt) (cdr pair))
+             (cons #t (cdr pair)))))
+   (M_value (cadr stmt) state)))
 
-; M_state_while
-(define (M_state_while stmt state)
-  (let loop ([state-current state])
-    (let ([pair (M_value (cadr stmt) state-current)])
-      (if (car pair)
-          (let ([pair2 (M_state_stmt (caddr stmt) (cdr pair))])
+;; M_state_while_loop: a helper for while loops (defined at top-level to avoid local define)
+(define (M_state_while_loop stmt state-current)
+  ((lambda (pair)
+     (if (car pair)
+         ((lambda (pair2)
             (if (car pair2)
-                (loop (cdr pair2))
+                (M_state_while_loop stmt (cdr pair2))
                 (cons #f (cdr pair2))))
-          (cons #t (cdr pair))))))
+          (M_state_stmt (caddr stmt) (cdr pair)))
+         (cons #t (cdr pair))))
+   (M_value (cadr stmt) state-current)))
 
-; interpret
+;; M_state_while: process a while statement by calling the helper
+(define (M_state_while stmt state)
+  (M_state_while_loop stmt state))
+
+;; interpret: parse a file and run the program
 (define (interpret filename)
-  (let ([parse-tree (parser filename)])
-    (display parse-tree)
-    (newline)
-    (let ([pair (M_state_stmt_list parse-tree ini_state)])
-      (display (cdr pair))
-      (newline)
-      (cdr pair))))
+  ((lambda (parse-tree)
+     (display parse-tree)
+     (newline)
+     ((lambda (pair)
+        (display (cdr pair))
+        (newline)
+        (cdr pair))
+      (M_state_stmt_list parse-tree ini_state)))
+   (parser filename)))
 
+;; run tests
 (interpret "tests/1.txt")
 (interpret "tests/2.txt")
 (interpret "tests/3.txt")
