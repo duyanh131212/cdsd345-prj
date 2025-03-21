@@ -4,230 +4,244 @@
          "utils.rkt")
 (require racket/list)
 
-; helpers
+
+(define ini_state '(() ()))
+
+(define (push-layer state)
+  (cons '(() ()) state))
+
+(define (pop-layer state)
+  (if (null? state)
+      (error "There is no layer to pop")
+      (cdr state)))
+
+(define (find-binding name bindings)
+  (cond
+    [(null? bindings) #f]
+    [(eq? name (car (car bindings))) (car bindings)]
+    [else (find-binding name (cdr bindings))]))
+
+(define (update-binding name val layer)
+  (cond
+    [(null? layer) (error "Variable not declared in layer:" name)]
+    [(eq? name (car (car layer)))
+     (cons (list name val) (cdr layer))]
+    [else (cons (car layer) (update-binding name val (cdr layer)))]))
+
+(define (getval name state)
+  (cond
+    [(null? state) (error "Variable not found:" name)]
+    [else (if (find-binding name (car state))
+              (cadr (find-binding name (car state)))
+              (getval name (cdr state)))]))
+
+(define (declare name state)
+  (if (find-binding name (car state))
+      (error "Variable already declared:" name)
+      (cons (cons (list name '()) (car state)) (cdr state))))
+
+(define (assign name val state)
+  (cond
+    [(null? state) (error "Variable not declared:" name)]
+    [else (if (find-binding name (car state))
+              (cons (update-binding name val (car state)) (cdr state))
+              (cons (car state) (assign name val (cdr state))))]))
+
 (define (contains? atom lis)
   (cond
     [(null? lis) #f]
     [(eq? atom (car lis)) #t]
     [else (contains? atom (cdr lis))]))
 
-; process-output
-(define (process-output output)
-  (cond
-    [(eq? #t output) 'true]
-    [(eq? #f output) 'false]
-    [(number? output) output]))
-
-; initial state
-(define ini_state '(() ()))
-
-; state vars
-(define statevars car)
-
-; state vals
-(define statevals cadr)
-
-; operator
-(define operator car)
-
-; leftoperand
-(define leftoperand cadr)
-
-; rightoperand
-(define rightoperand caddr)
-
-; getval from state
-(define (getval name state)
-  (let* ([vars (statevars state)]
-         [vals (statevals state)])
-        (cond
-            [(null? vars)           (error "vars DNE")]
-            [(eq? name (car vars))  (if (list? (car vals))
-                                        (error "not assigned")
-                                        (car vals))]
-            [else                   (getval name (list (cdr vars) (cdr vals)))])))
-
-; add
-(define (add name val state)
-  (cond
-    [(contains? name (statevars state))     (error "alr existed")]
-    [else                                   (list   (cons name (statevars state)) 
-                                                    (cons val (statevals state)))]))
-; remove
-(define (remove name state)
-  (removecps name state (lambda (v) v)))
-
-(define (removecps name state ret)
-  (cond
-    [(null? (statevars state))              (ret ini_state)]
-    [(eq? name (car (statevars state)))     (ret (list (cdr (statevars state)) (cdr (statevals state))))]
-    [else                                   (removecps name 
-                                                        (list   (cdr (statevars state))  
-                                                                (cdr (statevals state)))
-                                                        (lambda (s) 
-                                                            (ret (list  (cons (car (statevars state)) (statevars s)) 
-                                                                        (cons (car (statevals state)) (statevals s))))))]))
-; declare
-(define (declare name state) (add name '() state))
-
-; assign
-(define (assign name val state)
-  (cond
-    [(contains? name (statevars state)) (add name val (remove name state))]
-    [else                               (error "have not declared yet")]))
-
-; M_value
-(define M_value 
-    (lambda (expr state)
-        (cond
-        [(null? expr)       (error "called M_value on a null value")]
-        [(assign? expr)     (M_value (cadr expr) (M_state_assign expr state))]
-        [(arith? expr)      (M_int expr state)]
-        [(bool? expr)       (M_boolean expr state)]
-        [(not (list? expr)) (getval expr state)])))
-
-(define (signed? expr) (eq? (len expr 0) 2))
-(define (bool? expr)
-  (or (contains? expr '(true false))
-    (and    (list? expr) 
-            (contains? (operator expr) '(== < > <= >= || &&)))))
-(define (arith? expr) 
-    (or (number? expr) 
-        (and    (list? expr) 
-                (contains? (operator expr) '(+ - * / %)))))
-(define (assign? expr)
-  (and (list? expr)
-       (eq? (operator expr) '=)))
-
-; M_int
-(define (M_int expr state)
-  (cond
-    [(not (list? expr))             (if (number? expr)
-                                        expr
-                                        (getval expr state))]
-    [(and   (eq? '+ (operator expr))
-            (not (signed? expr)))   (+  (M_value (leftoperand expr) state)
-                                        (M_value (rightoperand expr) state))]
-    [(and   (eq? '+ (operator expr))
-            (signed? expr))         (M_value (leftoperand expr) state)]
-    [(and   (eq? '- (operator expr))
-            (not (signed? expr)))   (-  (M_value (leftoperand expr) state)
-                                        (M_value (rightoperand expr) state))]
-    [(and   (eq? '- (operator expr))
-            (signed? expr))         (-  0 
-                                        (M_value (leftoperand expr) state))]
-    [(eq? '* (operator expr))       (*  (M_value (leftoperand expr) state)
-                                        (M_value (rightoperand expr) state))]
-    [(eq? '/ (operator expr))       (quotient   (M_value (leftoperand expr) state)
-                                                (M_value (rightoperand expr) state))]
-    [(eq? '% (operator expr))       (remainder  (M_value (leftoperand expr) state)
-                                                (M_value (rightoperand expr) state))]))
-; M_boolean
-(define M_boolean
-  (lambda (expr state)
-    (cond
-      [(null? expr)                 (error "passed null to M_boolean")]
-      [(eq? 'true expr)             #t]
-      [(eq? 'false expr)            #f]
-      [(not (list? expr))           (getval expr state)]
-      [(eq? '! (operator expr))     (not (M_value (leftoperand expr) state))]
-      [(eq? '== (operator expr))    (eq?    (M_value (leftoperand expr) state)
-                                            (M_value (rightoperand expr) state))]
-      [(eq? '< (operator expr))     (<      (M_value (leftoperand expr) state)
-                                            (M_value (rightoperand expr) state))]
-      [(eq? '> (operator expr))     (>      (M_value (leftoperand expr) state)
-                                            (M_value (rightoperand expr) state))]
-      [(eq? '<= (operator expr))    (<=     (M_value (leftoperand expr) state)
-                                            (M_value (rightoperand expr) state))]
-      [(eq? '>= (operator expr))    (>=     (M_value (leftoperand expr) state)
-                                            (M_value (rightoperand expr) state))]
-      [(eq? '|| (operator expr))    (or     (M_value (leftoperand expr) state)
-                                            (M_value (rightoperand expr) state))]
-      [(eq? '&& (operator expr))    (and    (M_value (leftoperand expr) state)
-                                            (M_value (rightoperand expr) state))]
-      )))
-
-; M_state_stmt_list, entry point for all parse tree
-(define M_state_stmt_list
-  (lambda (stmt state)
-    (cond
-      [(null? stmt)         state]
-      [(null? (cdr stmt))   (M_state_stmt (car stmt) state)]
-      [else                 (M_state_stmt_list (cdr stmt) (M_state_stmt (car stmt) state))])))
-
-; M_state_stmt
-(define keyword car)
-(define M_state_stmt
-  (lambda (stmt state)
-    (cond       
-      [(null? stmt)                 state]
-      [(eq? 'var (keyword stmt))    (M_state_declare stmt state)]
-      [(eq? '= (keyword stmt))      (M_state_assign stmt state)]
-      [(eq? 'if (keyword stmt))     (M_state_if stmt state)]
-      [(eq? 'while (keyword stmt))  (M_state_while stmt state)]
-      [(eq? 'return (keyword stmt)) (M_state_return stmt state)]
-      [else                         state])))
-
-; M_state_return
-(define (M_state_return stmt state)
-  (cond
-    [(null? stmt)   (error "cannot return null")]
-    [else           (process-output (M_value (cadr stmt) state))]))
-
-
-(define name cadr)
-(define expr caddr)
-; M_state_declare
-(define (M_state_declare stmt state)
-  (cond
-    [(eq? (len stmt 0) 2)   (declare (name stmt) state) ]
-    [else                   (M_state_assign stmt (declare (name stmt) state))]))
-
-; M_state_assign
-(define (M_state_assign stmt state)
-  (cond
-    [(and   (list? (expr stmt)) 
-            (eq? (car (expr stmt)) '=)) (assign (name stmt) 
-                                                (M_value    (name (expr stmt)) 
-                                                            (M_state_assign (expr stmt) state)) 
-                                                (M_state_assign (expr stmt) state))]
-    [else                               (assign (name stmt) 
-                                                (M_value (expr stmt) state) 
-                                                state)]))
-
 (define (len lis n)
   (if (null? lis)
       n
       (len (cdr lis) (+ 1 n))))
 
-; M_state_if
-(define condition cadr)
-(define stmt1 caddr)
-(define stmt2 cadddr)
+(define (signed? expr)
+  (eq? (len expr 0) 2))
+
+(define (bool? expr)
+  (or (eq? expr 'true)
+      (eq? expr 'false)
+      (and (list? expr)
+           (contains? (car expr) '(== != < > <= >= || && !)))))
+
+(define (arith? expr)
+  (or (number? expr)
+      (and (list? expr)
+           (contains? (car expr) '(+ - * / %)))))
+
+(define (assign? expr)
+  (and (list? expr)
+       (eq? (car expr) '=)))
+
+
+(define operator car)
+(define leftoperand cadr)
+(define rightoperand caddr)
+
+(define (process-output output)
+  (cond
+    [(eq? output #t) 'true]
+    [(eq? output #f) 'false]
+    [(number? output) output]
+    [else output]))
+
+;; M_value: evaluates an expression to a value.
+(define (M_value expr state)
+  (cond
+    [(null? expr) (error "called M_value on a null value")]
+    [(assign? expr)
+     (M_value (cadr expr) (M_state_assign expr state))]
+    [(arith? expr) (M_int expr state)]
+    [(and (list? expr)
+          (contains? (car expr) '(== != < > <= >= || && !)))
+     (M_boolean expr state)]
+    [(bool? expr) (M_boolean expr state)]
+    [(not (list? expr)) (getval expr state)]
+    [(and (list? expr) (= (len expr 0) 2))
+     (eq? (M_value (car expr) state)
+          (M_value (cadr expr) state))]
+    [else (error "Unknown expression type in M_value")]))
+    
+;; M_int: arithmetic expressions.
+(define (M_int expr state)
+  (cond
+    [(not (list? expr))
+     (if (number? expr)
+         expr
+         (getval expr state))]
+    [(and (eq? '+ (operator expr))
+          (not (signed? expr)))
+     (+ (M_value (leftoperand expr) state)
+        (M_value (rightoperand expr) state))]
+    [(and (eq? '+ (operator expr))
+          (signed? expr))
+     (M_value (leftoperand expr) state)]
+    [(and (eq? '- (operator expr))
+          (not (signed? expr)))
+     (- (M_value (leftoperand expr) state)
+        (M_value (rightoperand expr) state))]
+    [(and (eq? '- (operator expr))
+          (signed? expr))
+     (- 0 (M_value (leftoperand expr) state))]
+    [(eq? '* (operator expr))
+     (* (M_value (leftoperand expr) state)
+        (M_value (rightoperand expr) state))]
+    [(eq? '/ (operator expr))
+     (quotient (M_value (leftoperand expr) state)
+               (M_value (rightoperand expr) state))]
+    [(eq? '% (operator expr))
+     (remainder (M_value (leftoperand expr) state)
+                (M_value (rightoperand expr) state))]
+    [else (error "Unknown operator in M_int")]))
+    
+;; M_boolean: boolean expressions.
+(define M_boolean
+  (lambda (expr state)
+    (cond
+      [(null? expr) (error "passed null to M_boolean")]
+      [(eq? 'true expr) #t]
+      [(eq? 'false expr) #f]
+      [(not (list? expr)) (getval expr state)]
+      [(eq? '! (operator expr))
+       (not (M_value (leftoperand expr) state))]
+      [(eq? '== (operator expr))
+       (eq? (M_value (leftoperand expr) state)
+            (M_value (rightoperand expr) state))]
+      [(eq? '!= (operator expr))
+       (not (eq? (M_value (leftoperand expr) state)
+                 (M_value (rightoperand expr) state)))]
+      [(eq? '< (operator expr))
+       (< (M_value (leftoperand expr) state)
+          (M_value (rightoperand expr) state))]
+      [(eq? '> (operator expr))
+       (> (M_value (leftoperand expr) state)
+          (M_value (rightoperand expr) state))]
+      [(eq? '<= (operator expr))
+       (<= (M_value (leftoperand expr) state)
+           (M_value (rightoperand expr) state))]
+      [(eq? '>= (operator expr))
+       (>= (M_value (leftoperand expr) state)
+           (M_value (rightoperand expr) state))]
+      [(eq? '|| (operator expr))
+       (or (M_value (leftoperand expr) state)
+           (M_value (rightoperand expr) state))]
+      [(eq? '&& (operator expr))
+       (and (M_value (leftoperand expr) state)
+            (M_value (rightoperand expr) state))]
+      [else (error "Unknown operator in M_boolean")])))
+
+;; M_state_stmt_list: evaluates a list of statements.
+(define (M_state_stmt_list stmt state)
+  (if (null? stmt)
+      state
+      (M_state_stmt_list (cdr stmt) (M_state_stmt (car stmt) state))))
+    
+;; M_state_stmt: dispatches a single statement.
+(define (M_state_stmt stmt state)
+  (cond
+    [(null? stmt) state]
+    [(eq? 'var (car stmt)) (M_state_declare stmt state)]
+    [(eq? '= (car stmt)) (M_state_assign stmt state)]
+    [(eq? 'if (car stmt)) (M_state_if stmt state)]
+    [(eq? 'while (car stmt)) (M_state_while stmt state)]
+    [(eq? 'return (car stmt)) (M_state_return stmt state)]
+    [(and (list? stmt) (eq? (car stmt) 'begin))
+     (pop-layer (M_state_stmt_list (cdr stmt) (push-layer state)))]
+    [else state]))
+    
+;; M_state_return: processes a return statement.
+(define (M_state_return stmt state)
+  (if (null? stmt)
+      (error "cannot return null")
+      (process-output (M_value (cadr stmt) state))))
+    
+;; M_state_declare: processes a declaration.
+(define (M_state_declare stmt state)
+  (if (= (len stmt 0) 2)
+      (declare (cadr stmt) state)
+      (M_state_assign stmt (declare (cadr stmt) state))))
+    
+;; M_state_assign: processes an assignment.
+(define (M_state_assign stmt state)
+  (if (and (list? (caddr stmt))
+           (eq? (car (caddr stmt)) '=))
+      (assign (cadr stmt)
+              (M_value (cadr (caddr stmt))
+                       (M_state_assign (caddr stmt) state))
+              (M_state_assign (caddr stmt) state))
+      (assign (cadr stmt)
+              (M_value (caddr stmt) state)
+              state)))
+    
+;; M_state_if: processes an if statement.
 (define (M_state_if stmt state)
-  (cond
-    [(M_value (condition stmt) state)   (M_state_stmt (stmt1 stmt)
-                                                      (M_state_stmt (condition stmt) state))]
-    [(eq? (len stmt 0) 4)               (M_state_stmt (stmt2 stmt)
-                                                      (M_state_stmt (condition stmt) state))]
-    [else                               state]))
-
-; M_state_while
-(define loop_condition cadr)
-(define loop_body caddr)
+  (if (M_value (cadr stmt) state)
+      (M_state_stmt (caddr stmt) state)
+      (if (= (len stmt 0) 4)
+          (M_state_stmt (cadddr stmt) state)
+          state)))
+    
+;; M_state_while: processes a while loop.
 (define (M_state_while stmt state)
-  (cond
-    [(M_value (loop_condition stmt) state)    (M_state_while  stmt 
-                                                                (M_state_stmt   (loop_body stmt) 
-                                                                                (M_state_stmt (loop_condition stmt) state)))]
-    [else                                       state]))
+  (if (M_value (cadr stmt) state)
+      (M_state_while stmt (M_state_stmt (caddr stmt) state))
+      state))
+    
+;; interpret: entry point.
+(define (interpret filename)
+  (begin
+    (display (parser filename))
+    (M_state_stmt_list (parser filename) ini_state)))
 
-; interpret
-(define (interpret filename) (begin
-                               (display (parser filename))
-                               (M_state_stmt_list (parser filename) ini_state)))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; TESTS
+;;
+;; (Assuming your test files are available as tests2/1.txt ... tests2/20.txt)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; tests
 (interpret "tests/1.txt")
 (interpret "tests/2.txt")
 (interpret "tests/3.txt")
@@ -258,3 +272,26 @@
 ;(interpret "tests/26.txt")
 ;(interpret "tests/27.txt");infinite loop vi k update global state
 ;(interpret "tests/28.txt")
+
+
+
+(interpret "tests2/1.txt")
+(interpret "tests2/2.txt")
+(interpret "tests2/3.txt")
+(interpret "tests2/4.txt")
+;(interpret "tests2/5.txt")
+(interpret "tests2/6.txt")
+(interpret "tests2/7.txt")
+(interpret "tests2/8.txt")
+(interpret "tests2/9.txt")
+(interpret "tests2/10.txt")
+;(interpret "tests2/11.txt")
+;(interpret "tests2/12.txt")
+;(interpret "tests2/13.txt")
+;(interpret "tests2/14.txt")
+(interpret "tests2/15.txt")
+(interpret "tests2/16.txt")
+(interpret "tests2/17.txt")
+(interpret "tests2/18.txt")
+(interpret "tests2/19.txt")
+(interpret "tests2/20.txt")
