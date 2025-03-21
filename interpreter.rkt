@@ -72,6 +72,7 @@
     [(null? lis) #f]
     [(eq? atom (car lis)) #t]
     [else (contains? atom (cdr lis))]))
+
 (define (len lis n)
   (if (null? lis) n (len (cdr lis) (+ 1 n))))
 
@@ -175,7 +176,7 @@
             (M_value (rightoperand expr) state))]
       [else (error "Unknown operator in M_boolean")])))
   
-(define (M_state_stmt_list stmts state loop?)
+(define (M_state_stmt_list stmts state loop? [throw-cont #f] [throw-box #f])
   (if (null? stmts)
       (list 'state state)
       ((lambda (result)
@@ -183,22 +184,33 @@
            [(eq? (car result) 'return) result]
            [(or (eq? (car result) 'break) (eq? (car result) 'continue))
             (if loop? result (error (format "~a used outside of loop" (car result))))]
-           [else (M_state_stmt_list (cdr stmts) (cadr result) loop?)]))
-       (M_state_stmt (car stmts) state loop?))))
+           [else (M_state_stmt_list (cdr stmts) (cadr result) loop? throw-cont throw-box)]))
+       (M_state_stmt (car stmts) state loop? throw-cont throw-box))))
 
-(define (M_state_stmt stmt state loop?)
+(define (M_state_stmt stmt state loop? [throw-cont #f] [throw-box #f])
   (cond
     [(null? stmt) (list 'state state)]
-    [(eq? 'var (car stmt)) (list 'state (M_state_declare stmt state))]
-    [(eq? '= (car stmt)) (list 'state (M_state_assign stmt state))]
-    [(eq? 'if (car stmt)) (M_state_if stmt state loop?)]
-    [(eq? 'while (car stmt)) (M_state_while stmt state)]
-    [(eq? 'return (car stmt)) (list 'return (process-output (M_value (cadr stmt) state)))]
-    [(eq? 'break (car stmt)) (list 'break state)]
-    [(eq? 'continue (car stmt)) (list 'continue state)]
+    [(eq? (car stmt) 'var) (list 'state (M_state_declare stmt state))]
+    [(eq? (car stmt) '=) (list 'state (M_state_assign stmt state))]
+    [(eq? (car stmt) 'if) (M_state_if stmt state loop? throw-cont throw-box)]
+    [(eq? (car stmt) 'while) (M_state_while stmt state throw-cont throw-box)]
+    [(eq? (car stmt) 'return) (list 'return (process-output (M_value (cadr stmt) state)))]
+    [(eq? (car stmt) 'break) (list 'break state)]
+    [(eq? (car stmt) 'continue) (list 'continue state)]
+    [(eq? (car stmt) 'throw)
+     (if (and throw-cont throw-box)
+         (begin
+           (set-box! throw-box (M_value (cadr stmt) state))
+           (throw-cont (list 'thrown state)))
+         (error "Uncaught throw outside try"))]
+    [(eq? (car stmt) 'try) (M_state_try stmt state loop?)]
+    [(eq? (car stmt) 'catch) (error "'catch' must appear after a try block")]
+    [(eq? (car stmt) 'finally) (error "'finally' must appear after a try block")]
     [(and (list? stmt) (eq? (car stmt) 'begin))
-     (M_state_begin (cdr stmt) state loop?)]
+     (M_state_begin (cdr stmt) state loop? throw-cont throw-box)]
+
     [else (list 'state state)]))
+
 
 (define (M_state_return stmt state)
   (if (null? stmt) (error "cannot return null")
@@ -220,25 +232,67 @@
               (M_value (caddr stmt) state)
               state)))
 
-(define (M_state_if stmt state loop?)
+(define (M_state_if stmt state loop? [throw-cont #f] [throw-box #f])
   (if (M_value (cadr stmt) state)
-      (M_state_stmt (caddr stmt) state loop?)
+      (M_state_stmt (caddr stmt) state loop? throw-cont throw-box)
       (if (= (len stmt 0) 4)
-          (M_state_stmt (cadddr stmt) state loop?)
+          (M_state_stmt (cadddr stmt) state loop? throw-cont throw-box)
           (list 'state state))))
 
-(define (M_state_while stmt state)
+(define (M_state_while stmt state [throw-cont #f] [throw-box #f])
   (if (M_value (cadr stmt) state)
       ((lambda (result)
          (cond
            [(eq? (car result) 'return) result]
            [(eq? (car result) 'break) (list 'state (cadr result))]
-           [(eq? (car result) 'continue) (M_state_while stmt (cadr result))]
-           [else (M_state_while stmt (cadr result))]))
-       (M_state_stmt (caddr stmt) state #t))
+           [(eq? (car result) 'continue)
+            (M_state_while stmt (cadr result) throw-cont throw-box)]
+           [else (M_state_while stmt (cadr result) throw-cont throw-box)]))
+       (M_state_stmt (caddr stmt) state #t throw-cont throw-box))
       (list 'state state)))
 
-(define (M_state_begin stmts state loop?)
+(define (M_state_try stmt state loop?)
+  (call/cc
+   (lambda (throw-cont)
+     (define throw-box (box #f))
+
+     (define (M_state_stmt_with_throw stmt state loop?)
+       (M_state_stmt stmt state loop? throw-cont throw-box))
+
+     (define (M_state_stmt_list_with_throw stmts state loop?)
+       (M_state_stmt_list stmts state loop? throw-cont throw-box))
+
+     ((lambda ()
+        ((lambda (try-body catch-block finally-block)
+           ((lambda (try-result)
+              ((lambda (after-catch-result)
+                 ((lambda (after-finally-result)
+                    (list 'state (cadr after-finally-result)))
+                  (M_state_stmt_list_with_throw
+                   (cadr finally-block)
+                   (cadr after-catch-result)
+                   loop?)))
+               (if (unbox throw-box)
+                   ((lambda (catch-var)
+                      ((lambda (new-state)
+                         ((lambda (new-state2)
+                            (M_state_stmt_list_with_throw
+                             (cddr catch-block)
+                             new-state2
+                             loop?))
+                          (assign catch-var
+                                  (unbox throw-box)
+                                  new-state)))
+                       (declare catch-var (push-layer state))))
+                    (cadr (cadr catch-block)))
+                   try-result)))
+            (M_state_stmt_list_with_throw try-body (push-layer state) loop?)))
+         (cadr stmt)     ; try body
+         (caddr stmt)    ; catch block
+         (cadddr stmt))))) ; finally block
+   )) ; end call/cc
+
+(define (M_state_begin stmts state loop? [throw-cont #f] [throw-box #f])
   ((lambda (new-state)
      ((lambda (result)
         (cond
@@ -246,7 +300,7 @@
           [(or (eq? (car result) 'break) (eq? (car result) 'continue))
            (list (car result) (pop-layer (cadr result)))]
           [else (list 'state (pop-layer (cadr result)))]))
-      (M_state_stmt_list stmts new-state loop?)))
+      (M_state_stmt_list stmts new-state loop? throw-cont throw-box)))
    (push-layer state)))
 
 (define (interpret filename)
@@ -295,3 +349,9 @@
 ;(interpret "tests2/12.txt")
 ;(interpret "tests2/13.txt")
 (interpret "tests2/14.txt")
+(interpret "tests2/15.txt")
+(interpret "tests2/16.txt")
+;(interpret "tests2/17.txt")
+;(interpret "tests2/18.txt")
+;(interpret "tests2/19.txt")
+;(interpret "tests2/20.txt")
