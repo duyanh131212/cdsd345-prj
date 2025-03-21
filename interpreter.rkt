@@ -4,11 +4,11 @@
          "utils.rkt")
 (require racket/list)
 
-
-(define ini_state (list (list '() '())))  ; one layer: (vars values)
+;; initial state (one layer containing a list for vars and a list for values)
+(define ini_state (list (list '() '())))
 
 (define (push-layer state)
-  (cons (list '() '()) state))
+  (cons '('() '()) state))
 
 (define (pop-layer state)
   (if (null? state)
@@ -30,7 +30,6 @@
       (cons (car lst) (list-set (cdr lst) (- idx 1) val))))
 
 ;; Searches for a binding in a single layer.
-;; A layer is of the form (list vars values).
 (define (find-binding name layer)
   (let ((idx (index-of name (car layer))))
     (if (number? idx)
@@ -62,7 +61,7 @@
     (if (index-of name (car layer))
         (error "Variable already declared:" name)
         (cons (list (cons name (car layer))         ; add name to the vars list
-                    (cons '() (cadr layer)))          ; add initial value '() to the values list
+                    (cons '() (cadr layer)))        ; add initial value '() to the values list
               (cdr state)))))
 
 ;; Assigns a value to a variable by searching the state layers.
@@ -202,23 +201,45 @@
       [else (error "Unknown operator in M_boolean")])))
 
 ;; M_state_stmt_list: evaluates a list of statements.
-(define (M_state_stmt_list stmt state)
-  (if (null? stmt)
-      state
-      (M_state_stmt_list (cdr stmt) (M_state_stmt (car stmt) state))))
+(define (M_state_stmt_list stmts state)
+  (if (null? stmts)
+      (list 'state state)
+      (let ([result (M_state_stmt (car stmts) state)])
+        (cond
+          [(eq? (car result) 'return)
+           result]
+          [else
+           (M_state_stmt_list (cdr stmts) (cadr result))]))))
+
     
-;; M_state_stmt: dispatches a single statement.
+;; M_state_stmt: process a single statement.
 (define (M_state_stmt stmt state)
   (cond
-    [(null? stmt) state]
-    [(eq? 'var (car stmt)) (M_state_declare stmt state)]
-    [(eq? '= (car stmt)) (M_state_assign stmt state)]
-    [(eq? 'if (car stmt)) (M_state_if stmt state)]
-    [(eq? 'while (car stmt)) (M_state_while stmt state)]
-    [(eq? 'return (car stmt)) (M_state_return stmt state)]
+    [(null? stmt)
+    ;; Empty statement
+    (list 'state state)]
+    ;; Declaration statement
+    [(eq? 'var (car stmt))
+     (list 'state (M_state_declare stmt state))]
+    ;; Assign statement
+    [(eq? '= (car stmt))
+     (list 'state (M_state_assign stmt state))]
+    ;; If statement
+    [(eq? 'if (car stmt))
+     (M_state_if stmt state)]
+    ;; While statement
+    [(eq? 'while (car stmt))
+     (M_state_while stmt state)]
+    ;; Return encountered
+    [(eq? 'return (car stmt))
+     (list 'return (process-output (M_value (cadr stmt) state)))]
+    ;; Begin-block -> push a layer, evaluate statements, then pop the layer.
     [(and (list? stmt) (eq? (car stmt) 'begin))
-     (pop-layer (M_state_stmt_list (cdr stmt) (push-layer state)))]
-    [else state]))
+     (M_state_begin (cdr stmt) state)]
+    
+    [else
+     ;; Any other statement
+     (list 'state state)]))
     
 ;; M_state_return: processes a return statement.
 (define (M_state_return stmt state)
@@ -247,17 +268,40 @@
 ;; M_state_if: processes an if statement.
 (define (M_state_if stmt state)
   (if (M_value (cadr stmt) state)
+      ;; Condition is true -> evaluate then
       (M_state_stmt (caddr stmt) state)
+      ;; Condition is false -> no else or process else branch
       (if (= (len stmt 0) 4)
           (M_state_stmt (cadddr stmt) state)
-          state)))
+          (list 'state state))))
     
-;; M_state_while: processes a while loop.
+;; M_state_while: process a while loop.
 (define (M_state_while stmt state)
   (if (M_value (cadr stmt) state)
-      (M_state_while stmt (M_state_stmt (caddr stmt) state))
-      state))
-    
+      ;; Run the body once if the condition is true
+      (let ([res (M_state_stmt (caddr stmt) state)])
+        (cond
+          [(eq? (car res) 'return)
+           ;; Return encountered
+           res]
+          [else
+           ;; Keep looping if return is not encountered
+           (M_state_while stmt (cadr res))]))
+      ;; False condition
+      (list 'state state)))
+
+;; Handle begin blocks
+(define (M_state_begin stmts state)
+  (define new-state (push-layer state))
+  (define result (M_state_stmt_list stmts new-state))
+  (cond
+    [(eq? (car result) 'return)
+     ;; Immediately stop if return is encountered
+     result]
+    [else
+     ;; If the block did not return, pop the layer
+     (list 'state (pop-layer (cadr result)))]))
+
 ;; interpret: entry point.
 (define (interpret filename)
   (begin
@@ -304,10 +348,10 @@
 (interpret "tests2/3.txt")
 (interpret "tests2/4.txt")
 ;(interpret "tests2/5.txt")
-;(interpret "tests2/6.txt")
-;(interpret "tests2/7.txt")
-;(interpret "tests2/8.txt")
-;(interpret "tests2/9.txt")
+(interpret "tests2/6.txt")
+(interpret "tests2/7.txt")
+(interpret "tests2/8.txt")
+(interpret "tests2/9.txt")
 ;(interpret "tests2/10.txt")
 ;(interpret "tests2/11.txt")
 ;(interpret "tests2/12.txt")
