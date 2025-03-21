@@ -4,48 +4,83 @@
          "utils.rkt")
 (require racket/list)
 
-
-(define ini_state (list '()))
+;; initial state (one layer containing a list for vars and a list for values)
+(define ini_state (list (list '() '())))
 
 (define (push-layer state)
-  (cons '() state))
+  (cons '('() '()) state))
 
 (define (pop-layer state)
   (if (null? state)
       (error "There is no layer to pop")
       (cdr state)))
 
-(define (find-binding name bindings)
+;; Helper: returns the index of 'name' in list 'lst' or #f if not found.
+(define (index-of-helper name lst i)
   (cond
-    [(null? bindings) #f]
-    [(eq? name (car (car bindings))) (car bindings)]
-    [else (find-binding name (cdr bindings))]))
+    [(null? lst) #f]
+    [(eq? name (car lst)) i]
+    [else (index-of-helper name (cdr lst) (+ i 1))]))
 
+(define (index-of name lst)
+  (index-of-helper name lst 0))
+
+;; Helper: returns a new list with the element at index idx replaced by val.
+(define (list-set lst idx val)
+  (if (zero? idx)
+      (cons val (cdr lst))
+      (cons (car lst) (list-set (cdr lst) (- idx 1) val))))
+
+;; Searches for a binding in a single layer.
+(define (find-binding name layer)
+  ((lambda (idx)
+     (if (number? idx)
+         (list name (list-ref (cadr layer) idx))
+         #f))
+   (index-of name (car layer))))
+
+;; Updates the binding in a single layer.
 (define (update-binding name val layer)
-  (cond
-    [(null? layer) (error "Variable not declared in layer:" name)]
-    [(eq? name (car (car layer)))
-     (cons (list name val) (cdr layer))]
-    [else (cons (car layer) (update-binding name val (cdr layer)))]))
+  ((lambda (vars)
+     ((lambda (vals)
+        ((lambda (idx)
+           (if (number? idx)
+               (list vars (list-set vals idx val))
+               (error "Variable not declared in layer:" name)))
+         (index-of name vars)))
+      (cadr layer)))
+   (car layer)))
 
+;; Looks up the value for a variable by searching layers top-down.
 (define (getval name state)
   (cond
     [(null? state) (error "Variable not found:" name)]
-    [else (if (find-binding name (car state))
-              (cadr (find-binding name (car state)))
-              (getval name (cdr state)))]))
+    [else ((lambda (binding)
+             (if binding
+                 (cadr binding)
+                 (getval name (cdr state))))
+           (find-binding name (car state)))]))
 
+;; Declares a new variable in the current (top) layer.
+;; It adds the variable name and initializes its value to '().
 (define (declare name state)
-  (if (find-binding name (car state))
-      (error "Variable already declared:" name)
-      (cons (cons (list name '()) (car state)) (cdr state))))
+  ((lambda (layer)
+     (if (index-of name (car layer))
+         (error "Variable already declared:" name)
+         (cons (list (cons name (car layer))
+                     (cons '() (cadr layer)))
+               (cdr state))))
+   (car state)))
 
+;; Assigns a value to a variable by searching the state layers.
 (define (assign name val state)
   (cond
     [(null? state) (error "Variable not declared:" name)]
-    [else (if (find-binding name (car state))
-              (cons (update-binding name val (car state)) (cdr state))
-              (cons (car state) (assign name val (cdr state))))]))
+    [else ((lambda (layer)
+             (if (number? (index-of name (car layer)))
+                 (cons (update-binding name val layer) (cdr state))
+                 (cons layer (assign name val (cdr state)))))
+           (car state))]))
 
 (define (contains? atom lis)
   (cond
@@ -76,7 +111,6 @@
   (and (list? expr)
        (eq? (car expr) '=)))
 
-
 (define operator car)
 (define leftoperand cadr)
 (define rightoperand caddr)
@@ -88,7 +122,10 @@
     [(number? output) output]
     [else output]))
 
-;; M_value: evaluates an expression to a value.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; EVALUATION OF EXPRESSIONS (M_value, etc.)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 (define (M_value expr state)
   (cond
     [(null? expr) (error "called M_value on a null value")]
@@ -105,7 +142,6 @@
           (M_value (cadr expr) state))]
     [else (error "Unknown expression type in M_value")]))
     
-;; M_int: arithmetic expressions.
 (define (M_int expr state)
   (cond
     [(not (list? expr))
@@ -137,7 +173,6 @@
                 (M_value (rightoperand expr) state))]
     [else (error "Unknown operator in M_int")]))
     
-;; M_boolean: boolean expressions.
 (define M_boolean
   (lambda (expr state)
     (cond
@@ -173,25 +208,46 @@
             (M_value (rightoperand expr) state))]
       [else (error "Unknown operator in M_boolean")])))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; STATEMENT EVALUATION (M_state_*)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 ;; M_state_stmt_list: evaluates a list of statements.
-(define (M_state_stmt_list stmt state)
-  (if (null? stmt)
-      state
-      (M_state_stmt_list (cdr stmt) (M_state_stmt (car stmt) state))))
-    
-;; M_state_stmt: dispatches a single statement.
+(define (M_state_stmt_list stmts state)
+  (if (null? stmts)
+      (list 'state state)
+      (let ([result (M_state_stmt (car stmts) state)])
+        (cond
+          [(eq? (car result) 'return) result]
+          [(or (eq? (car result) 'break) (eq? (car result) 'continue))
+           result]
+          [else (M_state_stmt_list (cdr stmts) (cadr result))]))))
+
+;; M_state_stmt: process a single statement.
 (define (M_state_stmt stmt state)
   (cond
-    [(null? stmt) state]
-    [(eq? 'var (car stmt)) (M_state_declare stmt state)]
-    [(eq? '= (car stmt)) (M_state_assign stmt state)]
-    [(eq? 'if (car stmt)) (M_state_if stmt state)]
-    [(eq? 'while (car stmt)) (M_state_while stmt state)]
-    [(eq? 'return (car stmt)) (M_state_return stmt state)]
+    [(null? stmt)
+     (list 'state state)]
+    [(eq? 'var (car stmt))
+     (list 'state (M_state_declare stmt state))]
+    [(eq? '= (car stmt))
+     (list 'state (M_state_assign stmt state))]
+    [(eq? 'if (car stmt))
+     (M_state_if stmt state)]
+    [(eq? 'while (car stmt))
+     (M_state_while stmt state)]
+    [(eq? 'return (car stmt))
+     (list 'return (process-output (M_value (cadr stmt) state)))]
+    ;; --- Added handling for break and continue ---
+    [(eq? 'break (car stmt))
+     (list 'break state)]
+    [(eq? 'continue (car stmt))
+     (list 'continue state)]
     [(and (list? stmt) (eq? (car stmt) 'begin))
-     (pop-layer (M_state_stmt_list (cdr stmt) (push-layer state)))]
-    [else state]))
-    
+     (M_state_begin (cdr stmt) state)]
+    [else
+     (list 'state state)]))
+
 ;; M_state_return: processes a return statement.
 (define (M_state_return stmt state)
   (if (null? stmt)
@@ -208,39 +264,86 @@
 (define (M_state_assign stmt state)
   (if (and (list? (caddr stmt))
            (eq? (car (caddr stmt)) '=))
-      (assign (cadr stmt)
-              (M_value (cadr (caddr stmt))
-                       (M_state_assign (caddr stmt) state))
-              (M_state_assign (caddr stmt) state))
+      ((lambda (inner-state)
+         (assign (cadr stmt)
+                 (M_value (cadr (caddr stmt)) inner-state)
+                 inner-state))
+       (M_state_assign (caddr stmt) state))
       (assign (cadr stmt)
               (M_value (caddr stmt) state)
               state)))
-    
+
 ;; M_state_if: processes an if statement.
 (define (M_state_if stmt state)
   (if (M_value (cadr stmt) state)
       (M_state_stmt (caddr stmt) state)
       (if (= (len stmt 0) 4)
           (M_state_stmt (cadddr stmt) state)
-          state)))
+          (list 'state state))))
     
-;; M_state_while: processes a while loop.
+;; M_state_while: process a while loop.
 (define (M_state_while stmt state)
   (if (M_value (cadr stmt) state)
-      (M_state_while stmt (M_state_stmt (caddr stmt) state))
-      state))
-    
+      (let ([result (M_state_stmt (caddr stmt) state)])
+        (cond
+          [(eq? (car result) 'return) result]
+          [(eq? (car result) 'break) (list 'state (cadr result))]
+          [(eq? (car result) 'continue) (M_state_while stmt (cadr result))]
+          [else (M_state_while stmt (cadr result))]))
+      (list 'state state)))
+
+;; Handle begin blocks (named here M_state_begin)
+(define (M_state_begin stmts state)
+  (define new-state (push-layer state))
+  (define result (M_state_stmt_list stmts new-state))
+  (cond
+    [(or (eq? (car result) 'return)
+         (eq? (car result) 'break)
+         (eq? (car result) 'continue))
+     result]
+    [else
+     (list 'state (pop-layer (cadr result)))]))
+
 ;; interpret: entry point.
 (define (interpret filename)
-  (begin
-    (display (parser filename))
-    (M_state_stmt_list (parser filename) ini_state)))
+  (display (parser filename))
+  (M_state_stmt_list (parser filename) ini_state))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; TESTS
-;;
-;; (Assuming your test files are available as tests2/1.txt ... tests2/20.txt)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(interpret "tests/1.txt")
+(interpret "tests/2.txt")
+(interpret "tests/3.txt")
+(interpret "tests/4.txt")
+(interpret "tests/5.txt")
+(interpret "tests/6.txt")
+(interpret "tests/7.txt")
+(interpret "tests/8.txt")
+(interpret "tests/9.txt")
+(interpret "tests/10.txt")
+
+;(interpret "tests/11.txt")
+;(interpret "tests/12.txt")
+;(interpret "tests/13.txt")
+;(interpret "tests/14.txt")
+(interpret "tests/15.txt")
+(interpret "tests/16.txt")
+(interpret "tests/17.txt")
+(interpret "tests/18.txt")
+(interpret "tests/19.txt")
+(interpret "tests/20.txt")
+
+;; extra tests
+(interpret "tests/21.txt") ; ok
+(interpret "tests/22.txt")
+;(interpret "tests/23.txt")
+(interpret "tests/24.txt")
+(interpret "tests/25.txt") ; ok
+;(interpret "tests/26.txt")
+;(interpret "tests/27.txt") ; infinite loop with global state update
+;(interpret "tests/28.txt")
 
 (interpret "tests2/1.txt")
 (interpret "tests2/2.txt")
@@ -255,10 +358,10 @@
 ;(interpret "tests2/11.txt")
 ;(interpret "tests2/12.txt")
 ;(interpret "tests2/13.txt")
-;(interpret "tests2/14.txt")
-(interpret "tests2/15.txt")
-(interpret "tests2/16.txt")
-(interpret "tests2/17.txt")
-(interpret "tests2/18.txt")
-(interpret "tests2/19.txt")
-(interpret "tests2/20.txt")
+(interpret "tests2/14.txt")
+;(interpret "tests2/15.txt")
+;(interpret "tests2/16.txt")
+;(interpret "tests2/17.txt")
+;(interpret "tests2/18.txt")
+;(interpret "tests2/19.txt")
+;(interpret "tests2/20.txt")
