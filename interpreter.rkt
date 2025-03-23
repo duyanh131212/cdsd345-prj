@@ -69,20 +69,20 @@
 
 ;; getval
 ;; Get the value of a variable
-(define (getval name state)
-  (cond
-    [(null? state)
-     (error "Variable not declared:" name)]
-    [else
-     (let ((binding (find-binding name (car state))))
-       (cond
-         [binding
-          (let ((val (cadr binding)))
-            (if (eq? val '())
-                (error "Variable not assigned:" name)
-                val))]
-         [else
-          (getval name (cdr state))]))]))
+(define getval
+  (lambda (name state)
+    (cond
+      ((null? state)
+       (error "Variable not declared:" name))
+      (else
+       ((lambda (binding)
+          (if binding
+              (if (eq? (cadr binding) '())
+                  (error "Variable not assigned:" name)
+                  (cadr binding))
+              (getval name (cdr state))))
+        (find-binding name (car state)))))))
+
 
 ;; declare
 ;; Declare a new variable
@@ -287,7 +287,7 @@
        ret
        thr)))
 
-;; M_state_stmt
+;; M_state_stmthttps://github.com/duyanh131212/cdsd345-prj.git
 ;; Execute a single statement
 (define (M_state_stmt stmt state next brk cont ret thr)
   (cond
