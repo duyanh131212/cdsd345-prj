@@ -570,7 +570,7 @@
 
       ;; Run the list of finally statements
       (M_state_stmt_list
-       (cdr finPart)
+       (cadr finPart)
        st
        next
        brk
@@ -638,7 +638,7 @@
 ;(interpret "tests/19.txt")
 ;(interpret "tests/20.txt")
 
-;=(interpret "tests2/1.txt")
+;(interpret "tests2/1.txt")
 ;(interpret "tests2/2.txt")
 ;(interpret "tests2/3.txt")
 ;(interpret "tests2/4.txt")
