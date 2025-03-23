@@ -1,3 +1,8 @@
+;; My Le
+;; Hieu Dang
+;; Anh Phan
+;; CSDS 345 - Group 14
+
 #lang racket/base
 
 (require "simpleParser.rkt"
