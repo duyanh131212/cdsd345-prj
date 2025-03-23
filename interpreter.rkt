@@ -366,18 +366,18 @@
 ;; M_state_if
 ;; Handle an if statement
 (define (M_state_if stmt state next brk cont ret thr)
-  ((lambda (condExpr then else)
+  ((lambda (condExpr thenBlock elseBlock)
      (if (M_value condExpr state)
 
          ;; Condition is true -> evaluate then
-         (M_state_stmt then
+         (M_state_stmt thenBlock
                        state
                        next brk cont ret thr)
 
          ;; Condition is false -> evaluate else if it exists
-         (if (null? else)
+         (if (null? elseBlock)
              (next state)
-             (M_state_stmt (car else)
+             (M_state_stmt (car elseBlock)
                            state
                            next brk cont ret thr))))
    
@@ -451,19 +451,19 @@
 ;; M_state_try
 ;; Handle a try block
 (define (M_state_try stmt state next brk cont ret outer-thr)
-  ((lambda (tryBlock catchPart finallyPart)
+  ((lambda (tryBlock catchBlock finallyBlock)
      (M_state_stmt_list
       tryBlock
       state
       
       ;; try finished normally
       (lambda (st2)
-        (M_state_finally finallyPart st2 next brk cont ret outer-thr))
+        (M_state_finally finallyBlock st2 next brk cont ret outer-thr))
       
       ;; break
       (lambda (st2)
         (M_state_finally
-         finallyPart
+         finallyBlock
          st2
          (lambda (st3) (brk st3))
          brk cont ret outer-thr))
@@ -471,7 +471,7 @@
       ;; continue
       (lambda (st2)
         (M_state_finally
-         finallyPart
+         finallyBlock
          st2
          (lambda (st3) (cont st3))
          brk cont ret outer-thr))
@@ -479,21 +479,21 @@
       ;; return
       (lambda (val st2)
         (M_state_finally
-         finallyPart
+         finallyBlock
          st2
          (lambda (st3) (ret val st3))
          brk cont ret outer-thr))
       
       ;; throw
       (lambda (val st2)
-        (if (and (pair? catchPart) (eq? (car catchPart) 'catch))
+        (if (and (pair? catchBlock) (eq? (car catchBlock) 'catch))
             
             ;; run the catch block
             (M_state_catch
              val
              st2
-             catchPart
-             finallyPart
+             catchBlock
+             finallyBlock
              next
              brk
              cont
@@ -502,7 +502,7 @@
             
             ;; no catch block
             (M_state_finally
-             finallyPart
+             finallyBlock
              st2
              (lambda (st3) (outer-thr val st3))
              brk cont ret outer-thr)))))
@@ -513,7 +513,7 @@
 
 ;; M_state_catch
 ;; Handle a catch block
-(define (M_state_catch thrown-val st catchPart finallyPart next brk cont ret thr)
+(define (M_state_catch thrown-val st catchBlock finallyBlock next brk cont ret thr)
   ((lambda (varName catchBody)
      ((lambda (st2)
         (M_state_stmt_list
@@ -522,12 +522,12 @@
 
          ;; normal completion
          (lambda (st3)
-           (M_state_finally finallyPart st3 next brk cont ret thr))
+           (M_state_finally finallyBlock st3 next brk cont ret thr))
 
          ;; break
          (lambda (st3)
            (M_state_finally
-            finallyPart
+            finallyBlock
             st3
             (lambda (st4) (brk st4))
             brk cont ret thr))
@@ -535,7 +535,7 @@
            
            ;; continue
            (M_state_finally
-            finallyPart
+            finallyBlock
             st3
             (lambda (st4) (cont st4))
             brk cont ret thr))
@@ -543,7 +543,7 @@
            
            ;; return
            (M_state_finally
-            finallyPart
+            finallyBlock
             st3
             (lambda (st4) (ret val st4))
             brk cont ret thr))
@@ -551,7 +551,7 @@
            
            ;; re-throw
            (M_state_finally
-            finallyPart
+            finallyBlock
             st3
             (lambda (st4) (thr val st4))
             brk cont ret thr))))
@@ -560,8 +560,8 @@
       (assign varName
               thrown-val
               (declare varName (push-layer st)))))
-   (caadr catchPart)
-   (caddr catchPart)))
+   (caadr catchBlock)
+   (caddr catchBlock)))
 
 ;; M_state_finally
 ;; Handle a finally block
@@ -638,7 +638,7 @@
 ;(interpret "tests/19.txt")
 ;(interpret "tests/20.txt")
 
-;(interpret "tests2/1.txt")
+;=(interpret "tests2/1.txt")
 ;(interpret "tests2/2.txt")
 ;(interpret "tests2/3.txt")
 ;(interpret "tests2/4.txt")
