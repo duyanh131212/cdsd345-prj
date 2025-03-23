@@ -164,22 +164,16 @@
   (cond
     [(null? expr)
      (error "Called M_value on a null value")]
-    
     [(assign? expr)
      (M_value (cadr expr) (M_state_assign expr state))]
-
     [(arith? expr)
      (M_int expr state)]
-
     [(and (list? expr) (contains? (car expr) '(== != < > <= >= || && !)))
      (M_boolean expr state)]
-
     [(bool? expr)
      (M_boolean expr state)]
-
     [(symbol? expr)
      (getval expr state)]
-
     [else
      (error "Unknown expression: " expr)]))
 
@@ -189,33 +183,25 @@
   (cond
     [(number? expr) expr]
     [(symbol? expr) (getval expr state)]
-
     [(and (eq? '+ (operator expr)) (not (signed? expr)))
      (+ (M_value (leftoperand expr) state)
         (M_value (rightoperand expr) state))]
-
     [(and (eq? '+ (operator expr)) (signed? expr))
      (M_value (leftoperand expr) state)]
-
     [(and (eq? '- (operator expr)) (not (signed? expr)))
      (- (M_value (leftoperand expr) state)
         (M_value (rightoperand expr) state))]
-
     [(and (eq? '- (operator expr)) (signed? expr))
      (- 0 (M_value (leftoperand expr) state))]
-
     [(eq? '* (operator expr))
      (* (M_value (leftoperand expr) state)
         (M_value (rightoperand expr) state))]
-
     [(eq? '/ (operator expr))
      (quotient (M_value (leftoperand expr) state)
                (M_value (rightoperand expr) state))]
-
     [(eq? '% (operator expr))
      (remainder (M_value (leftoperand expr) state)
                 (M_value (rightoperand expr) state))]
-
     [else
      (error "Unknown operator in M_int:" expr)]))
 
@@ -225,60 +211,46 @@
   (cond
     [(eq? expr 'true)  #t]
     [(eq? expr 'false) #f]
-    
     [(symbol? expr)    (getval expr state)]
-
     [(eq? '! (operator expr))
      (not (M_value (leftoperand expr) state))]
-
     [(eq? '== (operator expr))
      (eq? (M_value (leftoperand expr) state)
           (M_value (rightoperand expr) state))]
-
     [(eq? '!= (operator expr))
      (not (eq? (M_value (leftoperand expr) state)
                (M_value (rightoperand expr) state)))]
-
     [(eq? '< (operator expr))
      (< (M_value (leftoperand expr) state)
         (M_value (rightoperand expr) state))]
-
     [(eq? '> (operator expr))
      (> (M_value (leftoperand expr) state)
         (M_value (rightoperand expr) state))]
-
     [(eq? '<= (operator expr))
      (<= (M_value (leftoperand expr) state)
          (M_value (rightoperand expr) state))]
-
     [(eq? '>= (operator expr))
      (>= (M_value (leftoperand expr) state)
          (M_value (rightoperand expr) state))]
-
     [(eq? '|| (operator expr))
      (or (M_value (leftoperand expr) state)
          (M_value (rightoperand expr) state))]
-
     [(eq? '&& (operator expr))
      (and (M_value (leftoperand expr) state)
           (M_value (rightoperand expr) state))]
-
     [else
      (error "Unknown operator: " expr)]))
 
 ;; M_state_stmt_list
 ;; Execute a list of statements sequentially
 (define (M_state_stmt_list stmts state next brk cont ret thr)
-
   ;; Base case: no statements left to process
   (if (null? stmts)
       (next state)
-
       ;; Recursion: process the first statement
       (M_state_stmt
        (car stmts)           ; the current statement
        state                 ; the current state
-       
        ;; Process the rest of the statements
        (lambda (st2)
          (M_state_stmt_list (cdr stmts) st2 next brk cont ret thr))
@@ -294,68 +266,58 @@
     ;; empty statement
     [(null? stmt)
      (next state)]
-
     ;; declare statement
     [(eq? (car stmt) 'var)
      ((lambda (st2)
         (next st2))
       (M_state_declare stmt state))]
-
     ;; assign statement
     [(eq? (car stmt) '=)
      ((lambda (st2)
         (next st2))
       (M_state_assign stmt state))]
-
     ;; break
     [(eq? (car stmt) 'break)
      (brk state)]
-
     ;; continue
     [(eq? (car stmt) 'continue)
      (cont state)]
-
     ;; return
     [(eq? (car stmt) 'return)
      (ret (process-output (M_value (cadr stmt) state))
           state)]
-
     ;; throw
     [(eq? (car stmt) 'throw)
      (thr (M_value (cadr stmt) state) state)]
-
     ;; if statement
     [(eq? (car stmt) 'if)
      (M_state_if stmt state next brk cont ret thr)]
-
     ;; while statement
     [(eq? (car stmt) 'while)
      (M_state_while stmt state next brk cont ret thr)]
-
     ;; try statement
     [(eq? (car stmt) 'try)
      (M_state_try stmt state next brk cont ret thr)]
-
     ;; block of statements
     [(and (list? stmt) (eq? (car stmt) 'begin))
      (M_state_begin (cdr stmt) state next brk cont ret thr)]
-
     ;; unrecognized form of expression -> skip
     [else
      (next state)]))
 
-;; M_state_return
-;; Evaluate a return statement and extract the return value
+; M_state_return
 (define (M_state_return stmt state)
-  (if (null? stmt) (error "Cannot return null")
-      (process-output (M_value (cadr stmt) state))))
+  (cond
+    [(null? stmt)   (error "cannot return null")]
+    [else           (process-output (M_value (cadr stmt) state))]))
 
-;; M_state_declare
-;; Handle variable declaration
+
+(define name cadr)
+(define expr caddr)
+; M_state_declare
 (define (M_state_declare stmt state)
   (if (= (length stmt) 2)
       (declare (cadr stmt) state)
-      
       ;; If there's a value, do assignment after declaration
       ((lambda (st2)
          (M_state_assign (list '= (cadr stmt) (caddr stmt)) st2))
@@ -373,19 +335,16 @@
 (define (M_state_if stmt state next brk cont ret thr)
   ((lambda (condExpr thenBlock elseBlock)
      (if (M_value condExpr state)
-
          ;; Condition is true -> evaluate then
          (M_state_stmt thenBlock
                        state
                        next brk cont ret thr)
-
          ;; Condition is false -> evaluate else if it exists
          (if (null? elseBlock)
              (next state)
              (M_state_stmt (car elseBlock)
                            state
                            next brk cont ret thr))))
-   
    (cadr stmt)          ; the condition
    (caddr stmt)         ; then
    (if (= (length stmt) 4)
@@ -397,26 +356,21 @@
 (define (M_state_while stmt state next brk cont ret thr)
   ((lambda (condExpr body)
      (if (M_value condExpr state)
-         
          ;; Condition is true -> evaluate loop body
          (M_state_stmt
           body
           state
-          
           ;; After body, re-evaluate the loop
           (lambda (st2)
             (M_state_while stmt st2 next brk cont ret thr))
-          
           ;; break encountered
           (lambda (st2)
             (next st2))
-          
           ;; continue encountered
           (lambda (st2)
             (M_state_while stmt st2 next brk cont ret thr))
           ret
           thr)
-         
          ;; Condition is false -> exit loop
          (next state)))
    (cadr stmt)  ; loop condition
@@ -430,27 +384,21 @@
      (M_state_stmt_list
       stmts
       newState
-      
       ;; normal completion
       (lambda (finalSt)
         (next (pop-layer finalSt)))
-      
       ;; break
       (lambda (finalSt)
         (brk (pop-layer finalSt)))
-      
       ;; continue
       (lambda (finalSt)
         (cont (pop-layer finalSt)))
-      
       ;; return
       (lambda (val finalSt)
         (ret val (pop-layer finalSt)))
-      
       ;; throw
       (lambda (val finalSt)
         (thr val (pop-layer finalSt)))))
-   
    (push-layer state)))
 
 ;; M_state_try
@@ -460,11 +408,9 @@
      (M_state_stmt_list
       tryBlock
       state
-      
       ;; try finished normally
       (lambda (st2)
         (M_state_finally finallyBlock st2 next brk cont ret outer-thr))
-      
       ;; break
       (lambda (st2)
         (M_state_finally
@@ -472,7 +418,6 @@
          st2
          (lambda (st3) (brk st3))
          brk cont ret outer-thr))
-      
       ;; continue
       (lambda (st2)
         (M_state_finally
@@ -480,7 +425,6 @@
          st2
          (lambda (st3) (cont st3))
          brk cont ret outer-thr))
-      
       ;; return
       (lambda (val st2)
         (M_state_finally
@@ -488,11 +432,9 @@
          st2
          (lambda (st3) (ret val st3))
          brk cont ret outer-thr))
-      
       ;; throw
       (lambda (val st2)
         (if (and (pair? catchBlock) (eq? (car catchBlock) 'catch))
-            
             ;; run the catch block
             (M_state_catch
              val
@@ -504,14 +446,12 @@
              cont
              ret
              outer-thr)
-            
             ;; no catch block
             (M_state_finally
              finallyBlock
              st2
              (lambda (st3) (outer-thr val st3))
              brk cont ret outer-thr)))))
-   
    (cadr stmt)     ; try block
    (caddr stmt)    ; catch block
    (cadddr stmt))) ; finally block
@@ -524,11 +464,9 @@
         (M_state_stmt_list
          catchBody
          st2
-
          ;; normal completion
          (lambda (st3)
            (M_state_finally finallyBlock st3 next brk cont ret thr))
-
          ;; break
          (lambda (st3)
            (M_state_finally
@@ -537,7 +475,6 @@
             (lambda (st4) (brk st4))
             brk cont ret thr))
          (lambda (st3)
-           
            ;; continue
            (M_state_finally
             finallyBlock
@@ -545,7 +482,6 @@
             (lambda (st4) (cont st4))
             brk cont ret thr))
          (lambda (val st3)
-           
            ;; return
            (M_state_finally
             finallyBlock
@@ -553,7 +489,6 @@
             (lambda (st4) (ret val st4))
             brk cont ret thr))
          (lambda (val st3)
-           
            ;; re-throw
            (M_state_finally
             finallyBlock
@@ -572,7 +507,6 @@
 ;; Handle a finally block
 (define (M_state_finally finPart st next brk cont ret thr)
   (if (and (pair? finPart) (eq? (car finPart) 'finally))
-
       ;; Run the list of finally statements
       (M_state_stmt_list
        (cadr finPart)
@@ -582,7 +516,6 @@
        cont
        ret
        thr)
-
       ;; No finally block
       (next st)))
 
@@ -595,31 +528,25 @@
      (M_state_stmt_list
       parsed
       ini_state
-
       ;; next-cont: if all statements finish with no return/throw
       (lambda (finalState)
         (display "Program ended with no 'return' or 'throw'. Final state of the program is:\n")
         (display finalState)
         (newline))
-
       ;; break at top layer
       (lambda (st)
         (error "Break used outside of loop."))
-
       ;; continue at top layer
       (lambda (st)
         (error "Continue used outside of loop."))
-
       ;; Return value of evaluation
       (lambda (val st)
         (display "Result: ")
         (display val)
         (newline))
-
       ;; throw-cont at top layer/ uncaught throw
       (lambda (val st)
         (error "Uncaught throw" val))))
-   
    (parser filename)))
 
 ;(interpret "tests/1.txt")
