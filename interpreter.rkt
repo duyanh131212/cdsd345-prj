@@ -305,14 +305,16 @@
     [else
      (next state)]))
 
-;; M_state_return
-;; Evaluate a return statement and extract the return value
+; M_state_return
 (define (M_state_return stmt state)
-  (if (null? stmt) (error "Cannot return null")
-      (process-output (M_value (cadr stmt) state))))
+  (cond
+    [(null? stmt)   (error "cannot return null")]
+    [else           (process-output (M_value (cadr stmt) state))]))
 
-;; M_state_declare
-;; Handle variable declaration
+
+(define name cadr)
+(define expr caddr)
+; M_state_declare
 (define (M_state_declare stmt state)
   (if (= (length stmt) 2)
       (declare (cadr stmt) state)
