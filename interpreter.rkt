@@ -1,7 +1,7 @@
 ;; My Le
 ;; Hieu Dang
 ;; Anh Phan
-;; CSDS 345 - Group 14
+;; CSDS 345 - Group 11
 
 #lang racket/base
 
