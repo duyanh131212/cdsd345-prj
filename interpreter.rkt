@@ -56,8 +56,9 @@
       ((eq? 'funcall (statement-type statement)) 
        (call/cc
         (lambda (function-return)
-          (eval-function-call statement environment function-return)
-          (next environment))))
+          ; Function is called, but result is discarded
+          ; We only care about the environment changes
+          (next (eval-function-call-as-statement statement environment)))))
       (else (myerror "Unknown statement:" (statement-type statement))))))
 
 ; Create a function definition and add it to the environment
@@ -87,6 +88,18 @@
                       environment
                       return)))
 
+; NEW: Evaluate a function call as a statement (ignoring the return value)
+; Returns the updated environment with any global variable changes
+(define eval-function-call-as-statement
+  (lambda (statement environment)
+    (call/cc
+     (lambda (discard-return)
+       (eval-function-body-statement 
+        (lookup (function-name statement) environment)
+        (function-args statement)
+        environment
+        discard-return)))))
+
 ; Evaluate the function body with the prepared environment
 (define eval-function-body
   (lambda (closure args calling-env return)
@@ -98,6 +111,74 @@
      (lambda (env) (myerror "Continue used outside of loop"))
      (lambda (v env) (myerror "Uncaught exception thrown"))
      (lambda (env) (myerror "Function finished without return")))))
+
+; NEW: Function to evaluate a function body when called as a statement
+; The key difference is we capture any global variables changed and return the updated environment
+(define eval-function-body-statement
+  (lambda (closure args calling-env discard-return)
+    (call/cc
+     (lambda (return-with-env)
+       (interpret-statement-list 
+        (closure-body closure)
+        (bind-parameters (closure-name closure) (closure-parameters closure) args calling-env (push-frame (closure-environment closure)))
+        (lambda (v) (update-global-environment calling-env (pop-frame-to-global v) return-with-env))
+        (lambda (env) (myerror "Break used outside of loop"))
+        (lambda (env) (myerror "Continue used outside of loop"))
+        (lambda (v env) (myerror "Uncaught exception thrown"))
+        (lambda (env) (update-global-environment calling-env (pop-frame-to-global env) return-with-env)))))))
+
+; Extract the global frame from a function's environment
+; Fixed: Added check to ensure environment is a list before checking its length
+(define pop-frame-to-global
+  (lambda (environment)
+    (cond
+      ((not (list? environment)) environment) ; Handle non-list values
+      ((null? environment) environment) ; Handle empty lists
+      ((= (length environment) 1) environment) ; Return when we're at the bottom (global) frame
+      (else (pop-frame-to-global (pop-frame environment))))))
+
+; Update global environment by copying any changed variables
+(define update-global-environment
+  (lambda (global-env function-global-env return-continuation)
+    (return-continuation (copy-modified-globals global-env function-global-env))))
+
+; Copy any modified global variables from function environment back to global environment
+; Fixed: Added safety checks for structure
+(define copy-modified-globals
+  (lambda (global-env function-global-env)
+    (cond
+      ((not (list? function-global-env)) global-env) ; Handle non-list values
+      ((null? function-global-env) global-env) ; Handle empty environment
+      ((not (list? (car function-global-env))) global-env) ; Handle malformed environment
+      ((null? (car function-global-env)) global-env) ; Handle empty frame
+      ((not (list? (variables (car function-global-env)))) global-env) ; Handle malformed variables list
+      ((null? (variables (car function-global-env))) global-env) ; Handle empty variables list
+      (else (copy-modified-globals-helper global-env function-global-env)))))
+
+; Helper function for copying modified globals, with proper structure checks
+(define copy-modified-globals-helper
+  (lambda (global-env function-global-env)
+    (if (or (null? (variables (car function-global-env)))
+            (not (list? (car (variables (car function-global-env))))))
+        global-env
+        (copy-modified-globals 
+         (if (exists? (caar (variables (car function-global-env))) global-env)
+             (update-value-if-changed (caar (variables (car function-global-env))) 
+                                      (unbox (caar (store (car function-global-env)))) 
+                                      global-env)
+             global-env)
+         (cons (list (cdar (variables (car function-global-env))) 
+                     (cdar (store (car function-global-env))))
+               (cdr function-global-env))))))
+
+; Update a value in the global environment if it has been changed
+(define update-value-if-changed
+  (lambda (var val environment)
+    (if (exists? var environment)
+        (begin
+          (set-box! (lookup var environment) val)
+          environment)
+        environment)))
 
 ; Bind parameters to arguments in the function environment
 ; Modified to add the function itself to its environment for recursion
@@ -115,7 +196,7 @@
       ((and (null? params) (null? args)) function-env)
       ((or (null? params) (null? args)) (myerror "Parameter-argument mismatch"))
       ((eq? (car params) '&) 
-       (if (not (symbol? (cadr args)))
+       (if (not (symbol? (car args)))
            (myerror "Cannot pass non-variable by reference:" (car args))
            (bind-parameters-helper func-name
                                  (cddr params) 
@@ -149,7 +230,7 @@
         (begin
           (set-box! (lookup (get-assign-lhs statement) environment) (eval-expression (get-assign-rhs statement) environment))
           (next environment))
-        (myerror "Variable not found:" (get-assign-lhs statement)))))
+        (myerror "Variable used before declared:" (get-assign-lhs statement)))))
 
 ; We need to check if there is an else condition. Otherwise, we evaluate the expression and do the right thing.
 (define interpret-if
@@ -176,7 +257,7 @@
                               (lambda (env) (self self condition body env)))
            (next environment))))))
 
-; Interprets a block.
+; Interprets a block. The break, continue, throw and "next statement" continuations must be adjusted to pop the environment
 (define interpret-block
   (lambda (statement environment return break continue throw next)
     (interpret-statement-list (cdr statement)
