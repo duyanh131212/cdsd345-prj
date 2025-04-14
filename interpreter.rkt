@@ -8,8 +8,12 @@
      (call/cc 
       (lambda (return-program)
         (eval-function-call '(funcall main) 
-                          (interpret-global-list (parser file) (newenvironment) return-program)
-                          return-program))))))
+                            (interpret-global-list (parser file)
+                                                  (newenvironment)
+                                                  return-program)
+                            return-program
+                            (lambda (ex env)
+                              (myerror "Uncaught exception thrown at top level:" ex))))))))
 
 ; Process all global declarations and function definitions
 (define interpret-global-list
@@ -56,9 +60,10 @@
       ((eq? 'funcall (statement-type statement)) 
        (call/cc
         (lambda (function-return)
-          ; Function is called, but result is discarded
-          ; We only care about the environment changes
-          (next (eval-function-call-as-statement statement environment)))))
+          (next (eval-function-call-as-statement
+             statement
+             environment
+             throw)))))
       (else (myerror "Unknown statement:" (statement-type statement))))))
 
 ; Create a function definition and add it to the environment
@@ -69,7 +74,6 @@
             environment)))
 
 ; Create a function closure containing parameters, body, and defining environment
-; Added function name as a parameter to allow for recursion
 (define create-closure
   (lambda (name parameters body environment)
     (list 'closure name parameters body environment)))
@@ -82,40 +86,43 @@
 
 ; Evaluate a function call and return the value
 (define eval-function-call
-  (lambda (statement environment return)
-    (eval-function-body (lookup (function-name statement) environment)
-                      (function-args statement)
-                      environment
-                      return)))
+  (lambda (statement environment return throw)
+    (eval-function-body
+     (lookup (function-name statement) environment)
+     (function-args statement)
+     environment
+     return
+     throw)))
 
-; NEW: Evaluate a function call as a statement (ignoring the return value)
+; Evaluate a function call as a statement (ignoring the return value)
 ; Returns the updated environment with any global variable changes
 (define eval-function-call-as-statement
-  (lambda (statement environment)
+  (lambda (statement environment throw)
     (call/cc
-     (lambda (discard-return)
-       (eval-function-body-statement 
-        (lookup (function-name statement) environment)
-        (function-args statement)
-        environment
-        discard-return)))))
+      (lambda (discard-return)
+        (eval-function-body-statement
+         (lookup (function-name statement) environment)
+         (function-args statement)
+         environment
+         discard-return
+         throw)))))
 
 ; Evaluate the function body with the prepared environment
 (define eval-function-body
-  (lambda (closure args calling-env return)
+  (lambda (closure args calling-env return throw)
     (interpret-statement-list 
      (closure-body closure)
      (bind-parameters (closure-name closure) (closure-parameters closure) args calling-env (push-frame (closure-environment closure)))
      return
      (lambda (env) (myerror "Break used outside of loop"))
      (lambda (env) (myerror "Continue used outside of loop"))
-     (lambda (v env) (myerror "Uncaught exception thrown"))
-     (lambda (env) (myerror "Function finished without return")))))
+     (lambda (ex env) (throw ex env)) 
+      (lambda (env) (myerror "Function finished without return")))))
 
-; NEW: Function to evaluate a function body when called as a statement
-; The key difference is we capture any global variables changed and return the updated environment
+; Function to evaluate a function body when called as a statement
+; Capture any global variables changed and return the updated environment
 (define eval-function-body-statement
-  (lambda (closure args calling-env discard-return)
+  (lambda (closure args calling-env discard-return throw)
     (call/cc
      (lambda (return-with-env)
        (interpret-statement-list 
@@ -124,11 +131,10 @@
         (lambda (v) (update-global-environment calling-env (pop-frame-to-global v) return-with-env))
         (lambda (env) (myerror "Break used outside of loop"))
         (lambda (env) (myerror "Continue used outside of loop"))
-        (lambda (v env) (myerror "Uncaught exception thrown"))
+        (lambda (ex env) (throw ex env))
         (lambda (env) (update-global-environment calling-env (pop-frame-to-global env) return-with-env)))))))
 
 ; Extract the global frame from a function's environment
-; Fixed: Added check to ensure environment is a list before checking its length
 (define pop-frame-to-global
   (lambda (environment)
     (cond
@@ -143,7 +149,6 @@
     (return-continuation (copy-modified-globals global-env function-global-env))))
 
 ; Copy any modified global variables from function environment back to global environment
-; Fixed: Added safety checks for structure
 (define copy-modified-globals
   (lambda (global-env function-global-env)
     (cond
@@ -155,7 +160,7 @@
       ((null? (variables (car function-global-env))) global-env) ; Handle empty variables list
       (else (copy-modified-globals-helper global-env function-global-env)))))
 
-; Helper function for copying modified globals, with proper structure checks
+; Helper function for copying modified globals
 (define copy-modified-globals-helper
   (lambda (global-env function-global-env)
     (if (or (null? (variables (car function-global-env)))
@@ -181,7 +186,6 @@
         environment)))
 
 ; Bind parameters to arguments in the function environment
-; Modified to add the function itself to its environment for recursion
 (define bind-parameters
   (lambda (func-name params args calling-env function-env)
     (bind-parameters-helper func-name params args calling-env 
@@ -216,7 +220,7 @@
   (lambda (statement environment return)
     (return (eval-expression (get-expr statement) environment))))
 
-; Adds a new variable binding to the environment. There may be an assignment with the variable
+; Adds a new variable binding to the environment
 (define interpret-declare
   (lambda (statement environment next)
     (if (exists-declare-value? statement)
@@ -230,7 +234,7 @@
         (begin
           (set-box! (lookup (get-assign-lhs statement) environment) (eval-expression (get-assign-rhs statement) environment))
           (next environment))
-        (myerror "Variable used before declared:" (get-assign-lhs statement)))))
+        (myerror "Variable not found:" (get-assign-lhs statement)))))
 
 ; We need to check if there is an else condition. Otherwise, we evaluate the expression and do the right thing.
 (define interpret-if
@@ -242,7 +246,7 @@
        (interpret-statement (get-else statement) environment return break continue throw next))
       (else (next environment)))))
 
-; Interprets a while loop. We must create break and continue continuations for this loop
+; Interprets a while loop
 (define interpret-while
   (lambda (statement environment return throw next)
     ((lambda (loop)
@@ -257,7 +261,7 @@
                               (lambda (env) (self self condition body env)))
            (next environment))))))
 
-; Interprets a block. The break, continue, throw and "next statement" continuations must be adjusted to pop the environment
+; Interprets a block
 (define interpret-block
   (lambda (statement environment return break continue throw next)
     (interpret-statement-list (cdr statement)
@@ -350,7 +354,13 @@
       ((eq? expr 'true) #t)
       ((eq? expr 'false) #f)
       ((not (list? expr)) (unbox (lookup expr environment)))
-      ((eq? 'funcall (car expr)) (call/cc (lambda (return) (eval-function-call expr environment return))))
+      ((eq? 'funcall (car expr)) (call/cc
+      (lambda (return-cont)
+        (eval-function-call expr
+                            environment
+                            return-cont
+                            (lambda (ex env2)
+                              (myerror "Uncaught exception thrown in expression" ex))))))
       (else (eval-operator expr environment)))))
 
 ; Evaluate a binary (or unary) operator.
@@ -381,7 +391,7 @@
       ((eq? '&& (operator expr)) (and op1value (eval-expression (operand2 expr) environment)))
       (else (myerror "Unknown operator:" (operator expr))))))
 
-; Determines if two values are equal. We need a special test because there are both boolean and integer types.
+; Determines if two values are equal
 (define isequal
   (lambda (val1 val2)
     (if (and (number? val1) (number? val2))
@@ -571,7 +581,7 @@
        (if (null? vals)
            str
            (self self
-                (string-append str (string-append " " (symbol->string (car vals))))
+                (string-append str " " (symbol->string (car vals)))
                 (cdr vals)))))))
 
 (interpret "tests3/1.txt")
