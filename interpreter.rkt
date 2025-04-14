@@ -64,18 +64,20 @@
 (define interpret-function-definition
   (lambda (statement environment)
     (insert (function-name statement) 
-            (create-closure (function-parameters statement) (function-body statement) environment)
+            (create-closure (function-name statement) (function-parameters statement) (function-body statement) environment)
             environment)))
 
 ; Create a function closure containing parameters, body, and defining environment
+; Added function name as a parameter to allow for recursion
 (define create-closure
-  (lambda (parameters body environment)
-    (list 'closure parameters body environment)))
+  (lambda (name parameters body environment)
+    (list 'closure name parameters body environment)))
 
 ; Extract elements from a closure
-(define closure-parameters cadr)
-(define closure-body caddr)
-(define closure-environment cadddr)
+(define closure-name cadr)
+(define closure-parameters caddr)
+(define closure-body cadddr)
+(define closure-environment (lambda (closure) (car (cddddr closure))))
 
 ; Evaluate a function call and return the value
 (define eval-function-call
@@ -90,7 +92,7 @@
   (lambda (closure args calling-env return)
     (interpret-statement-list 
      (closure-body closure)
-     (bind-parameters (closure-parameters closure) args calling-env (push-frame (closure-environment closure)))
+     (bind-parameters (closure-name closure) (closure-parameters closure) args calling-env (push-frame (closure-environment closure)))
      return
      (lambda (env) (myerror "Break used outside of loop"))
      (lambda (env) (myerror "Continue used outside of loop"))
@@ -98,24 +100,35 @@
      (lambda (env) (myerror "Function finished without return")))))
 
 ; Bind parameters to arguments in the function environment
+; Modified to add the function itself to its environment for recursion
 (define bind-parameters
-  (lambda (params args calling-env function-env)
+  (lambda (func-name params args calling-env function-env)
+    (bind-parameters-helper func-name params args calling-env 
+                            (if (null? func-name)
+                                function-env
+                                (insert func-name (lookup func-name calling-env) function-env)))))
+
+; Helper function to bind parameters without adding function name again
+(define bind-parameters-helper
+  (lambda (func-name params args calling-env function-env)
     (cond
       ((and (null? params) (null? args)) function-env)
       ((or (null? params) (null? args)) (myerror "Parameter-argument mismatch"))
       ((eq? (car params) '&) 
        (if (not (symbol? (cadr args)))
            (myerror "Cannot pass non-variable by reference:" (car args))
-           (bind-parameters (cddr params) 
-                          (cdr args) 
-                          calling-env 
-                          (insert (cadr params) (lookup (car args) calling-env) function-env))))
-      (else (bind-parameters (cdr params) 
-                            (cdr args) 
-                            calling-env 
-                            (insert (car params) 
-                                   (box (eval-expression (car args) calling-env)) 
-                                   function-env))))))
+           (bind-parameters-helper func-name
+                                 (cddr params) 
+                                 (cdr args) 
+                                 calling-env 
+                                 (insert (cadr params) (lookup (car args) calling-env) function-env))))
+      (else (bind-parameters-helper func-name
+                                  (cdr params) 
+                                  (cdr args) 
+                                  calling-env 
+                                  (insert (car params) 
+                                         (box (eval-expression (car args) calling-env)) 
+                                         function-env))))))
 
 ; Calls the return continuation with the given expression value
 (define interpret-return
@@ -136,7 +149,7 @@
         (begin
           (set-box! (lookup (get-assign-lhs statement) environment) (eval-expression (get-assign-rhs statement) environment))
           (next environment))
-        (myerror "Variable used before declared:" (get-assign-lhs statement)))))
+        (myerror "Variable not found:" (get-assign-lhs statement)))))
 
 ; We need to check if there is an else condition. Otherwise, we evaluate the expression and do the right thing.
 (define interpret-if
@@ -163,7 +176,7 @@
                               (lambda (env) (self self condition body env)))
            (next environment))))))
 
-; Interprets a block. The break, continue, throw and "next statement" continuations must be adjusted to pop the environment
+; Interprets a block.
 (define interpret-block
   (lambda (statement environment return break continue throw next)
     (interpret-statement-list (cdr statement)
@@ -479,56 +492,6 @@
            (self self
                 (string-append str (string-append " " (symbol->string (car vals))))
                 (cdr vals)))))))
-
-;(interpret "tests/1.txt")
-;(interpret "tests/2.txt")
-;(interpret "tests/3.txt")
-;(interpret "tests/4.txt")
-;(interpret "tests/5.txt")
-;(interpret "tests/6.txt")
-;(interpret "tests/7.txt")
-;(interpret "tests/8.txt")
-;(interpret "tests/9.txt")
-;(interpret "tests/10.txt")
-;(interpret "tests/11.txt")
-;(interpret "tests/12.txt")
-;(interpret "tests/13.txt")
-;(interpret "tests/14.txt")
-;(interpret "tests/15.txt")
-;(interpret "tests/16.txt")
-;(interpret "tests/17.txt")
-;(interpret "tests/18.txt")
-;(interpret "tests/19.txt")
-;(interpret "tests/20.txt")
-;(interpret "tests/21.txt")
-;(interpret "tests/22.txt")
-;(interpret "tests/23.txt")
-;(interpret "tests/24.txt")
-;(interpret "tests/25.txt")
-;(interpret "tests/26.txt")
-;(interpret "tests/27.txt")
-;(interpret "tests/28.txt")
-
-;(interpret "tests2/1.txt")
-;(interpret "tests2/2.txt")
-;(interpret "tests2/3.txt")
-;(interpret "tests2/4.txt")
-;(interpret "tests2/5.txt")
-;(interpret "tests2/6.txt")
-;(interpret "tests2/7.txt")
-;(interpret "tests2/8.txt")
-;(interpret "tests2/9.txt")
-;(interpret "tests2/10.txt")
-;(interpret "tests2/11.txt")
-;(interpret "tests2/12.txt")
-;(interpret "tests2/13.txt")
-;(interpret "tests2/14.txt")
-;(interpret "tests2/15.txt")
-;(interpret "tests2/16.txt")
-;(interpret "tests2/17.txt")
-;(interpret "tests2/18.txt")
-;(interpret "tests2/19.txt")
-;(interpret "tests2/20.txt")
 
 (interpret "tests3/1.txt")
 (interpret "tests3/2.txt")
