@@ -1,6 +1,12 @@
 #lang racket
 (require "functionParser.rkt")
 
+;------------------------------------
+; CSDS 345 - Project 3
+; Group 6
+; Hieu Dang, My Le, Anh Phan
+;------------------------------------
+
 ; The main function. Calls parser to get the parse tree and interprets it with a new environment.
 (define interpret
   (lambda (file)
@@ -581,7 +587,7 @@
        (if (null? vals)
            str
            (self self
-                (string-append str " " (symbol->string (car vals)))
+                (string-append str " " (format "~a" (car vals)))
                 (cdr vals)))))))
 
 (interpret "tests3/1.txt")
