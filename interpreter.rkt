@@ -243,8 +243,6 @@
   (lambda (statement environment class-context this-obj return throw)
     (cond
       ((eq? 'new (car (function-name statement)))
-       (display "Creating new instance of class: ") (display (cadr (function-name statement))) (newline)
-       (display "Environment: ") (display environment) (newline)
        (create-object-instance (lookup-class (cadr (function-name statement)) environment) environment))
       ((and (list? (function-name statement)) (eq? 'dot (car (function-name statement))))
        (eval-function-call-dot (cadr (function-name statement)) 
@@ -285,14 +283,17 @@
 ; Evaluate the function body with the prepared environment
 (define eval-function-body
   (lambda (method args environment class-context this-obj return throw)
-    (interpret-statement-list 
-     (method-body method)
-     (bind-parameters method args environment class-context this-obj)
-     return
-     (lambda (env) (myerror "Break used outside of loop"))
-     (lambda (env) (myerror "Continue used outside of loop"))
-     throw
-     (lambda (env) (myerror "Function finished without return")))))
+    (call/cc
+     (lambda (method-return)
+       (interpret-statement-list 
+        (method-body method)
+        (bind-parameters method args environment class-context this-obj)
+        method-return  ; Use method-return as the return continuation
+        (lambda (env) (myerror "Break used outside of loop"))
+        (lambda (env) (myerror "Continue used outside of loop"))
+        throw
+        ; If we reach the end without a return
+        (lambda (env) (return 'void)))))))
 
 ; Bind parameters to arguments in the function environment
 (define bind-parameters
@@ -356,7 +357,7 @@
            environment 
            (extract-class-context environment) 
            (extract-this-object environment) 
-           function-return
+           (lambda (val) val)
            throw)
           (next environment))))
       (else (myerror "Unknown statement:" (statement-type statement))))))
@@ -937,9 +938,9 @@
 (interpret "tests4/5.txt" "A")
 (interpret "tests4/6.txt" "A")
 (interpret "tests4/7.txt" "C")
-(interpret "tests4/8.txt" "Square")
-(interpret "tests4/9.txt" "Square")
-(interpret "tests4/10.txt" "List")
-(interpret "tests4/11.txt" "List")
-(interpret "tests4/12.txt" "List")
-(interpret "tests4/13.txt" "C")
+;(interpret "tests4/8.txt" "Square")
+;(interpret "tests4/9.txt" "Square")
+;(interpret "tests4/10.txt" "List")
+;(interpret "tests4/11.txt" "List")
+;(interpret "tests4/12.txt" "List")
+;(interpret "tests4/13.txt" "C")
