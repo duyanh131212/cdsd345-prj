@@ -1,44 +1,330 @@
 #lang racket
-(require "functionParser.rkt")
+
+(require "classParser.rkt")
 
 ;------------------------------------
-; CSDS 345 - Project 3
-; Group 6
+; CSDS 345 - Project 4
+; Group 13
 ; Hieu Dang, My Le, Anh Phan
 ;------------------------------------
 
-; The main function. Calls parser to get the parse tree and interprets it with a new environment.
+; The main function. Calls parser to get the parse tree and interprets it
 (define interpret
-  (lambda (file)
+  (lambda (filename class-name)
     (scheme->language
-     (call/cc 
+     (call/cc
       (lambda (return-program)
-        (eval-function-call '(funcall main) 
-                            (interpret-global-list (parser file)
-                                                  (newenvironment)
-                                                  return-program)
-                            return-program
-                            (lambda (ex env)
-                              (myerror "Uncaught exception thrown at top level:" ex))))))))
+        (interpret-main-class
+         (interpret-classes
+          (parser filename)
+          (newenvironment)
+          return-program)
+         (string->symbol class-name)
+         return-program))))))
 
-; Process all global declarations and function definitions
-(define interpret-global-list
+; Interpret the main class and its main method
+(define interpret-main-class
+  (lambda (class-env class-name return-program)
+    (interpret-main-method
+     (lookup class-name class-env)
+     class-env
+     return-program)))
+
+; Helper function to interpret the main method
+(define interpret-main-method
+  (lambda (main-class class-env return-program)
+    (eval-function-body
+     (lookup-method 'main (class-methods main-class))
+     '()
+     class-env
+     main-class
+     #f
+     return-program
+     (lambda (ex env) (myerror "Uncaught exception thrown:" ex)))))
+
+; Function to lookup a method in a method list
+(define lookup-method
+  (lambda (method-name methods)
+    (cond
+      ((null? methods) (myerror "Method not found:" method-name))
+      ((eq? method-name (caar methods)) (cadar methods))
+      (else (lookup-method method-name (cdr methods))))))
+
+(define lookup-in-method-list
+  (lambda (method-name methods)
+    (cond
+      ((null? methods) (myerror "Method not found:" method-name))
+      ((eq? method-name (caar methods)) (cadar methods))
+      (else (lookup-in-method-list method-name (cdr methods))))))
+
+; Interpret all class definitions
+(define interpret-classes
   (lambda (program environment return-program)
     (cond
       ((null? program) environment)
-      ((eq? 'var (statement-type (car program))) 
-       (interpret-global-list (cdr program) 
-                             (interpret-declare (car program) environment (lambda (env) env))
-                             return-program))
-      ((eq? '= (statement-type (car program)))
-       (interpret-global-list (cdr program)
-                             (interpret-assign (car program) environment (lambda (env) env))
-                             return-program))
-      ((eq? 'function (statement-type (car program)))
-       (interpret-global-list (cdr program)
-                             (interpret-function-definition (car program) environment)
-                             return-program))
-      (else (myerror "Invalid statement at top level"))))) 
+      ((eq? 'class (statement-type (car program)))
+       (interpret-classes (cdr program)
+                          (interpret-class-definition (car program) environment return-program)
+                          return-program))
+      (else (myerror "Invalid statement at top level")))))
+
+; Interpret a class definition
+(define interpret-class-definition
+  (lambda (statement environment return-program)
+    (insert (class-name statement)
+            (create-class-closure statement
+                                   (if (null? (class-extends statement))
+                                       '()
+                                       (lookup (extends-class-name statement) environment))
+                                   environment)
+            environment)))
+
+; Create a class closure containing all class information
+(define create-class-closure
+  (lambda (statement parent-class global-env)
+    (list 'class (class-name statement) 
+          parent-class
+          (interpret-class-fields (class-body statement) 
+                                 (if (null? parent-class) '() (class-fields parent-class)))
+          (interpret-class-methods (class-name statement) 
+                                 (class-body statement) 
+                                 (if (null? parent-class) '() (class-methods parent-class))
+                                 global-env))))
+
+; Extract elements from a class closure
+(define class-name 
+  (lambda (class)
+    (if (eq? 'class (statement-type class))
+        (cadr class)
+        (cadr class))))
+
+(define class-extends
+  (lambda (class)
+    (caddr class)))
+
+(define extends-class-name
+  (lambda (class)
+    (cadr (cadr (class-extends class)))))
+
+(define class-body
+  (lambda (class)
+    (cadddr class)))
+
+(define class-parent
+  (lambda (class-closure)
+    (caddr class-closure)))
+
+(define class-fields
+  (lambda (class-closure)
+    (cadddr class-closure)))
+
+(define class-methods
+  (lambda (class-closure)
+    (car (cddddr class-closure))))
+
+; Interpret class fields from class body
+(define interpret-class-fields
+  (lambda (class-body parent-fields)
+    (cond
+      ((null? class-body) parent-fields)
+      ((and (eq? 'var (statement-type (car class-body))) 
+            (not (eq? 'static-var (statement-type (car class-body))))) 
+       (interpret-class-fields 
+        (cdr class-body) 
+        (cons (list (get-declare-var (car class-body))
+                    (if (exists-declare-value? (car class-body))
+                        (get-declare-value (car class-body))
+                        'novalue))
+              parent-fields)))
+      (else (interpret-class-fields (cdr class-body) parent-fields)))))
+
+; Interpret class methods from class body
+(define interpret-class-methods
+  (lambda (class-name class-body parent-methods global-env)
+    (cond
+      ((null? class-body) parent-methods)
+      ((eq? 'static-function (statement-type (car class-body)))
+       (interpret-class-methods 
+        class-name
+        (cdr class-body) 
+        (replace-or-add (function-name (car class-body))
+                       (create-method-closure (function-name (car class-body)) 
+                                             (function-parameters (car class-body))
+                                             (function-body (car class-body)) 
+                                             global-env
+                                             class-name
+                                             #t)
+                       parent-methods)
+        global-env))
+      ((eq? 'function (statement-type (car class-body)))
+       (interpret-class-methods 
+        class-name
+        (cdr class-body) 
+        (replace-or-add (function-name (car class-body))
+                       (create-method-closure (function-name (car class-body)) 
+                                             (cons 'this (function-parameters (car class-body)))
+                                             (function-body (car class-body)) 
+                                             global-env
+                                             class-name
+                                             #f)
+                       parent-methods)
+        global-env))
+      (else (interpret-class-methods class-name (cdr class-body) parent-methods global-env)))))
+
+; Helper function to replace or add an element to a list
+(define replace-or-add
+  (lambda (name value lst)
+    (cond
+      ((null? lst) (list (list name value)))
+      ((eq? name (caar lst)) (cons (list name value) (cdr lst)))
+      (else (cons (car lst) (replace-or-add name value (cdr lst)))))))
+
+; Create a method closure with additional class information
+(define create-method-closure
+  (lambda (name parameters body environment class-name is-static)
+    (list 'method name parameters body environment class-name is-static)))
+
+; Extract elements from a method closure
+(define method-name cadr)
+(define method-parameters caddr)
+(define method-body cadddr)
+(define method-environment (lambda (method) (car (cddddr method))))
+(define method-class (lambda (method) (cadr (cddddr method))))
+(define method-static? (lambda (method) (caddr (cddddr method))))
+
+; Create a new object instance
+(define create-object-instance
+  (lambda (class-closure env)
+    (list 'object class-closure (initialize-fields (class-fields class-closure) env class-closure))))
+
+; Initialize fields for a new object
+(define initialize-fields
+  (lambda (fields env class)
+    (cond
+      ((null? fields) '())
+      (else 
+       (cons (list (caar fields) 
+                    (box (if (eq? (cadar fields) 'novalue)
+                             (default-value (caar fields))
+                             (eval-expression (cadar fields) env class #f))))
+               (initialize-fields (cdr fields) env class))))))
+
+; Default values for uninitialized fields
+(define default-value
+  (lambda (field-name)
+    0))  ; Default to 0 for simplicity
+
+; Extract elements from an object
+(define object-class cadr)
+(define object-fields caddr)
+
+; Lookup a field in an object
+(define object-lookup-field
+  (lambda (field-name obj)
+    (cond
+      ((null? (object-fields obj)) (myerror "Field not found in object:" field-name))
+      ((eq? field-name (caar (object-fields obj))) (cadar (object-fields obj)))
+      (else (object-lookup-field field-name (list 'object (object-class obj) (cdr (object-fields obj))))))))
+
+; Update a field in an object
+(define object-update-field
+  (lambda (field-name value obj)
+    (cond
+      ((null? (object-fields obj)) (myerror "Field not found in object:" field-name))
+      ((eq? field-name (caar (object-fields obj)))
+       (begin
+         (set-box! (cadar (object-fields obj)) value)
+         obj))
+      (else (object-update-field field-name value 
+                               (list 'object (object-class obj) (cdr (object-fields obj))))))))
+
+; Evaluate a function call and return the value
+(define eval-function-call
+  (lambda (statement environment class-context this-obj return throw)
+    (cond
+      ((eq? 'new (car (function-name statement)))
+       (display "Creating new instance of class: ") (display (cadr (function-name statement))) (newline)
+       (display "Environment: ") (display environment) (newline)
+       (create-object-instance (lookup-class (cadr (function-name statement)) environment) environment))
+      ((and (list? (function-name statement)) (eq? 'dot (car (function-name statement))))
+       (eval-function-call-dot (cadr (function-name statement)) 
+                              (caddr (function-name statement)) 
+                              (function-args statement) 
+                              environment class-context this-obj return throw))
+      (else 
+       (eval-function-body
+        (if class-context
+            (lookup (function-name statement) (class-methods class-context))
+            (lookup (function-name statement) environment))
+        (map (lambda (arg) (eval-expression arg environment class-context this-obj)) 
+             (function-args statement))
+        environment 
+        class-context 
+        this-obj 
+        return 
+        throw)))))
+
+; Helper function for dot function calls
+(define eval-function-call-dot
+  (lambda (obj-expr method-name args environment class-context this-obj return throw)
+    (eval-function-body
+     (lookup-method method-name
+                    (class-methods
+                     (object-class
+                      (eval-expression obj-expr environment class-context this-obj))))
+     (map (lambda (arg)
+            (eval-expression arg environment class-context this-obj))
+          args)
+     environment
+     (object-class
+      (eval-expression obj-expr environment class-context this-obj))
+     (eval-expression obj-expr environment class-context this-obj)
+     return
+     throw)))
+
+; Evaluate the function body with the prepared environment
+(define eval-function-body
+  (lambda (method args environment class-context this-obj return throw)
+    (interpret-statement-list 
+     (method-body method)
+     (bind-parameters method args environment class-context this-obj)
+     return
+     (lambda (env) (myerror "Break used outside of loop"))
+     (lambda (env) (myerror "Continue used outside of loop"))
+     throw
+     (lambda (env) (myerror "Function finished without return")))))
+
+; Bind parameters to arguments in the function environment
+(define bind-parameters
+  (lambda (method args env class-context this-obj)
+    (if (method-static? method)
+        ; For static methods, we want to make sure the original environment 
+        ; is still accessible for class lookups
+        (bind-params-helper (method-parameters method) args env 
+                           (push-frame-preserve-globals env (method-environment method)))
+        ; For instance methods, similar approach but add 'this'
+        (bind-params-helper (cdr (method-parameters method)) args env
+                           (insert 'this (box this-obj) 
+                                  (push-frame-preserve-globals env (method-environment method)))))))
+
+; Helper to push a frame while preserving access to global environment
+(define push-frame-preserve-globals
+  (lambda (global-env method-env)
+    (cons (newframe) global-env)))
+
+; Helper function to bind parameters
+(define bind-params-helper
+  (lambda (params args env function-env)
+    (cond
+      ((and (null? params) (null? args)) function-env)
+      ((or (null? params) (null? args)) (myerror "Parameter-argument mismatch"))
+      (else (bind-params-helper
+             (cdr params) 
+             (cdr args) 
+             env 
+             (insert (car params) 
+                    (box (car args)) 
+                    function-env))))))
 
 ; interprets a list of statements. The state/environment from each statement is used for the next ones.
 (define interpret-statement-list
@@ -48,7 +334,7 @@
         (interpret-statement (car statement-list) environment return break continue throw 
                            (lambda (env) (interpret-statement-list (cdr statement-list) env return break continue throw next))))))
 
-; interpret a statement in the environment with continuations for return, break, continue, throw, and "next statement"
+; interpret a statement in the environment with continuations
 (define interpret-statement
   (lambda (statement environment return break continue throw next)
     (cond
@@ -62,191 +348,123 @@
       ((eq? 'begin (statement-type statement)) (interpret-block statement environment return break continue throw next))
       ((eq? 'throw (statement-type statement)) (interpret-throw statement environment throw))
       ((eq? 'try (statement-type statement)) (interpret-try statement environment return break continue throw next))
-      ((eq? 'function (statement-type statement)) (next (interpret-function-definition statement environment)))
       ((eq? 'funcall (statement-type statement)) 
        (call/cc
         (lambda (function-return)
-          (next (eval-function-call-as-statement
-             statement
-             environment
-             throw)))))
+          (eval-function-call 
+           statement 
+           environment 
+           (extract-class-context environment) 
+           (extract-this-object environment) 
+           function-return
+           throw)
+          (next environment))))
       (else (myerror "Unknown statement:" (statement-type statement))))))
 
-; Create a function definition and add it to the environment
-(define interpret-function-definition
-  (lambda (statement environment)
-    (insert (function-name statement) 
-            (create-closure (function-name statement) (function-parameters statement) (function-body statement) environment)
-            environment)))
-
-; Create a function closure containing parameters, body, and defining environment
-(define create-closure
-  (lambda (name parameters body environment)
-    (list 'closure name parameters body environment)))
-
-; Extract elements from a closure
-(define closure-name cadr)
-(define closure-parameters caddr)
-(define closure-body cadddr)
-(define closure-environment (lambda (closure) (car (cddddr closure))))
-
-; Evaluate a function call and return the value
-(define eval-function-call
-  (lambda (statement environment return throw)
-    (eval-function-body
-     (lookup (function-name statement) environment)
-     (function-args statement)
-     environment
-     return
-     throw)))
-
-; Evaluate a function call as a statement (ignoring the return value)
-; Returns the updated environment with any global variable changes
-(define eval-function-call-as-statement
-  (lambda (statement environment throw)
-    (call/cc
-      (lambda (discard-return)
-        (eval-function-body-statement
-         (lookup (function-name statement) environment)
-         (function-args statement)
-         environment
-         discard-return
-         throw)))))
-
-; Evaluate the function body with the prepared environment
-(define eval-function-body
-  (lambda (closure args calling-env return throw)
-    (interpret-statement-list 
-     (closure-body closure)
-     (bind-parameters (closure-name closure) (closure-parameters closure) args calling-env (push-frame (closure-environment closure)))
-     return
-     (lambda (env) (myerror "Break used outside of loop"))
-     (lambda (env) (myerror "Continue used outside of loop"))
-     (lambda (ex env) (throw ex env)) 
-      (lambda (env) (myerror "Function finished without return")))))
-
-; Function to evaluate a function body when called as a statement
-; Capture any global variables changed and return the updated environment
-(define eval-function-body-statement
-  (lambda (closure args calling-env discard-return throw)
-    (call/cc
-     (lambda (return-with-env)
-       (interpret-statement-list 
-        (closure-body closure)
-        (bind-parameters (closure-name closure) (closure-parameters closure) args calling-env (push-frame (closure-environment closure)))
-        (lambda (v) (update-global-environment calling-env (pop-frame-to-global v) return-with-env))
-        (lambda (env) (myerror "Break used outside of loop"))
-        (lambda (env) (myerror "Continue used outside of loop"))
-        (lambda (ex env) (throw ex env))
-        (lambda (env) (update-global-environment calling-env (pop-frame-to-global env) return-with-env)))))))
-
-; Extract the global frame from a function's environment
-(define pop-frame-to-global
+; Extract the class context from environment (if available)
+(define extract-class-context
   (lambda (environment)
+    (extract-class-from-this (lookup-safe 'this environment))))
+
+; Helper function to extract class from this object
+(define extract-class-from-this
+  (lambda (this-binding)
+    (if this-binding
+        (object-class (unbox this-binding))
+        #f)))
+
+; Extract the this object from environment (if available)
+(define extract-this-object
+  (lambda (environment)
+    (extract-this-from-binding (lookup-safe 'this environment))))
+
+; Helper function to extract this from binding
+(define extract-this-from-binding
+  (lambda (this-binding)
+    (if this-binding
+        (unbox this-binding)
+        #f)))
+
+; Safe lookup that returns #f instead of error if not found
+(define lookup-safe
+  (lambda (var environment)
     (cond
-      ((not (list? environment)) environment) ; Handle non-list values
-      ((null? environment) environment) ; Handle empty lists
-      ((= (length environment) 1) environment) ; Return when we're at the bottom (global) frame
-      (else (pop-frame-to-global (pop-frame environment))))))
-
-; Update global environment by copying any changed variables
-(define update-global-environment
-  (lambda (global-env function-global-env return-continuation)
-    (return-continuation (copy-modified-globals global-env function-global-env))))
-
-; Copy any modified global variables from function environment back to global environment
-(define copy-modified-globals
-  (lambda (global-env function-global-env)
-    (cond
-      ((not (list? function-global-env)) global-env) ; Handle non-list values
-      ((null? function-global-env) global-env) ; Handle empty environment
-      ((not (list? (car function-global-env))) global-env) ; Handle malformed environment
-      ((null? (car function-global-env)) global-env) ; Handle empty frame
-      ((not (list? (variables (car function-global-env)))) global-env) ; Handle malformed variables list
-      ((null? (variables (car function-global-env))) global-env) ; Handle empty variables list
-      (else (copy-modified-globals-helper global-env function-global-env)))))
-
-; Helper function for copying modified globals
-(define copy-modified-globals-helper
-  (lambda (global-env function-global-env)
-    (if (or (null? (variables (car function-global-env)))
-            (not (list? (car (variables (car function-global-env))))))
-        global-env
-        (copy-modified-globals 
-         (if (exists? (caar (variables (car function-global-env))) global-env)
-             (update-value-if-changed (caar (variables (car function-global-env))) 
-                                      (unbox (caar (store (car function-global-env)))) 
-                                      global-env)
-             global-env)
-         (cons (list (cdar (variables (car function-global-env))) 
-                     (cdar (store (car function-global-env))))
-               (cdr function-global-env))))))
-
-; Update a value in the global environment if it has been changed
-(define update-value-if-changed
-  (lambda (var val environment)
-    (if (exists? var environment)
-        (begin
-          (set-box! (lookup var environment) val)
-          environment)
-        environment)))
-
-; Bind parameters to arguments in the function environment
-(define bind-parameters
-  (lambda (func-name params args calling-env function-env)
-    (bind-parameters-helper func-name params args calling-env 
-                            (if (null? func-name)
-                                function-env
-                                (insert func-name (lookup func-name calling-env) function-env)))))
-
-; Helper function to bind parameters without adding function name again
-(define bind-parameters-helper
-  (lambda (func-name params args calling-env function-env)
-    (cond
-      ((and (null? params) (null? args)) function-env)
-      ((or (null? params) (null? args)) (myerror "Parameter-argument mismatch"))
-      ((eq? (car params) '&) 
-       (if (not (symbol? (car args)))
-           (myerror "Cannot pass non-variable by reference:" (car args))
-           (bind-parameters-helper func-name
-                                 (cddr params) 
-                                 (cdr args) 
-                                 calling-env 
-                                 (insert (cadr params) (lookup (car args) calling-env) function-env))))
-      (else (bind-parameters-helper func-name
-                                  (cdr params) 
-                                  (cdr args) 
-                                  calling-env 
-                                  (insert (car params) 
-                                         (box (eval-expression (car args) calling-env)) 
-                                         function-env))))))
+      ((null? environment) #f)
+      ((exists-in-list? var (variables (topframe environment))) 
+       (lookup-in-frame var (topframe environment)))
+      (else (lookup-safe var (remainingframes environment))))))
 
 ; Calls the return continuation with the given expression value
 (define interpret-return
   (lambda (statement environment return)
-    (return (eval-expression (get-expr statement) environment))))
+    (return (eval-expression (get-expr statement) 
+                            environment 
+                            (extract-class-context environment)
+                            (extract-this-object environment)))))
 
 ; Adds a new variable binding to the environment
 (define interpret-declare
   (lambda (statement environment next)
     (if (exists-declare-value? statement)
-        (next (insert (get-declare-var statement) (box (eval-expression (get-declare-value statement) environment)) environment))
+        (next (insert (get-declare-var statement) 
+                     (box (eval-expression (get-declare-value statement) 
+                                          environment 
+                                          (extract-class-context environment)
+                                          (extract-this-object environment))) 
+                     environment))
         (next (insert (get-declare-var statement) (box 'novalue) environment)))))
 
 ; Updates the environment to add a new binding for a variable
 (define interpret-assign
   (lambda (statement environment next)
-    (if (exists? (get-assign-lhs statement) environment)
-        (begin
-          (set-box! (lookup (get-assign-lhs statement) environment) (eval-expression (get-assign-rhs statement) environment))
-          (next environment))
-        (myerror "Variable not found:" (get-assign-lhs statement)))))
+    (interpret-assign-helper (get-assign-lhs statement) 
+                            (get-assign-rhs statement) 
+                            environment 
+                            next)))
 
-; We need to check if there is an else condition. Otherwise, we evaluate the expression and do the right thing.
+; Helper for interpret-assign to handle different lhs types
+(define interpret-assign-helper
+  (lambda (lhs rhs environment next)
+    (cond
+      ; Case 1: Simple variable assignment
+      ((symbol? lhs)
+       (if (exists? lhs environment)
+           (next (begin
+                  (set-box! (lookup lhs environment) 
+                           (eval-expression rhs 
+                                          environment 
+                                          (extract-class-context environment)
+                                          (extract-this-object environment)))
+                  environment))
+           (assign-to-field lhs rhs environment next)))
+      
+      ; Case 2: Object field assignment (dot operator)
+      ((and (list? lhs) (eq? 'dot (car lhs)))
+       (next (object-update-field 
+              (caddr lhs)
+              (eval-expression rhs environment (extract-class-context environment) (extract-this-object environment))
+              (eval-expression (cadr lhs) environment (extract-class-context environment) (extract-this-object environment)))))
+      
+      (else (myerror "Invalid assignment target")))))
+
+; Helper to assign to an object field
+(define assign-to-field
+  (lambda (field-name rhs environment next)
+    (if (extract-this-object environment)
+        (next (object-update-field 
+               field-name
+               (eval-expression rhs environment (extract-class-context environment) (extract-this-object environment))
+               (extract-this-object environment)))
+        (myerror "Variable not found:" field-name))))
+
+; Evaluates the expression and executes the appropriate branch
 (define interpret-if
   (lambda (statement environment return break continue throw next)
     (cond
-      ((eval-expression (get-condition statement) environment) 
+      ((eval-expression (get-condition statement) 
+                       environment 
+                       (extract-class-context environment)
+                       (extract-this-object environment)) 
        (interpret-statement (get-then statement) environment return break continue throw next))
       ((exists-else? statement) 
        (interpret-statement (get-else statement) environment return break continue throw next))
@@ -258,7 +476,10 @@
     ((lambda (loop)
        (loop loop (get-condition statement) (get-body statement) environment))
      (lambda (self condition body environment)
-       (if (eval-expression condition environment)
+       (if (eval-expression condition 
+                          environment 
+                          (extract-class-context environment)
+                          (extract-this-object environment))
            (interpret-statement body environment 
                               return 
                               (lambda (env) (next env)) 
@@ -278,10 +499,14 @@
                             (lambda (v env) (throw v (pop-frame env)))
                             (lambda (env) (next (pop-frame env))))))
 
-; We use a continuation to throw the proper value.
+; Throws an exception
 (define interpret-throw
   (lambda (statement environment throw)
-    (throw (eval-expression (get-expr statement) environment) environment)))
+    (throw (eval-expression (get-expr statement) 
+                          environment 
+                          (extract-class-context environment)
+                          (extract-this-object environment)) 
+           environment)))
 
 ; Interpret a try-catch-finally block
 (define interpret-try
@@ -352,49 +577,162 @@
        (myerror "Incorrectly formatted finally block"))
       (else (cons 'begin (cadr finally-statement))))))
 
-; Evaluates all possible boolean and arithmetic expressions, including constants and variables.
+; Evaluates expressions, including object-oriented constructs
 (define eval-expression
-  (lambda (expr environment)
+  (lambda (expr environment class-context this-obj)
     (cond
       ((number? expr) expr)
       ((eq? expr 'true) #t)
       ((eq? expr 'false) #f)
-      ((not (list? expr)) (unbox (lookup expr environment)))
-      ((eq? 'funcall (car expr)) (call/cc
-      (lambda (return-cont)
-        (eval-function-call expr
+      ((eq? expr 'this) 
+       (if this-obj 
+           this-obj 
+           (myerror "Using 'this' outside of instance method context")))
+      ((not (list? expr)) 
+       (eval-variable expr environment this-obj))
+      ((eq? 'new (car expr)) 
+       (create-object-instance (lookup-class (cadr expr) environment) environment))
+      ((eq? 'dot (car expr))
+       (eval-dot-expression (cadr expr) (caddr expr) environment class-context this-obj))
+      ((eq? 'funcall (car expr)) 
+       (call/cc
+        (lambda (return-cont)
+          (eval-function-call expr
                             environment
+                            class-context
+                            this-obj
                             return-cont
-                            (lambda (ex env2)
+                            (lambda (ex env)
                               (myerror "Uncaught exception thrown in expression" ex))))))
-      (else (eval-operator expr environment)))))
+      (else (eval-operator expr environment class-context this-obj)))))
 
-; Evaluate a binary (or unary) operator.
+; Evaluate a variable, possibly in an object
+(define eval-variable
+  (lambda (var environment this-obj)
+    (cond
+      ((exists? var environment)
+       (unbox (lookup var environment)))
+      ((and this-obj (field-exists? var (object-fields this-obj)))
+       (unbox (object-lookup-field var this-obj)))
+      (else (myerror "Variable not found:" var)))))
+
+; Check if a field exists in an object
+(define field-exists?
+  (lambda (field-name object-fields)
+    (cond
+      ((null? object-fields) #f)
+      ((eq? field-name (caar object-fields)) #t)
+      (else (field-exists? field-name (cdr object-fields))))))
+
+; Evaluate a dot expression
+(define eval-dot-expression
+  (lambda (obj-expr field-or-method environment class-context this-obj)
+    (let ((obj (eval-expression obj-expr environment class-context this-obj)))
+      (cond
+        ((eq? obj-expr 'super)
+         (if this-obj
+             (eval-super-expression field-or-method environment class-context this-obj)
+             (myerror "Using 'super' outside of instance method context")))
+        (else
+         (if (method-exists? field-or-method (class-methods (object-class obj)))
+             (lookup-method field-or-method (class-methods (object-class obj)))
+             (unbox (object-lookup-field field-or-method obj))))))))
+
+; Evaluate a super expression
+(define eval-super-expression
+  (lambda (field-or-method environment class-context this-obj)
+    (if (null? (class-parent class-context))
+        (myerror "No parent class found")
+        (lookup-field-or-method 
+         (list 'object (class-parent class-context) (object-fields this-obj))
+         field-or-method 
+         environment 
+         (class-parent class-context)))))
+
+; Evaluate a normal dot expression
+(define eval-dot-normal
+  (lambda (obj-expr field-or-method environment class-context this-obj)
+    (newline)
+    (lookup-field-or-method 
+     (eval-expression obj-expr environment class-context this-obj)
+     field-or-method 
+     environment 
+     class-context)))
+
+; Lookup a field or method from an object
+(define lookup-field-or-method
+  (lambda (obj field-or-method environment class-context)
+    (cond
+      ((method-exists? field-or-method (class-methods (object-class obj)))
+       (lookup-method field-or-method (class-methods (object-class obj))))
+      ((field-exists? field-or-method (object-fields obj))
+       (unbox (object-lookup-field field-or-method obj)))
+      (else (myerror "Field or method not found:" field-or-method)))))
+
+; Lookup a class
+(define lookup-class
+  (lambda (class-name environment)
+    (cond
+      ((null? environment) (myerror "Class not found:" class-name))
+      ((exists-in-list? class-name (variables (topframe environment)))
+       (lookup-in-frame class-name (topframe environment)))
+      (else
+       (lookup-class class-name (remainingframes environment))))))
+
+(define exists-in-topframe?
+  (lambda (var environment)
+    (exists-in-list? var (variables (topframe environment)))))
+
+; Check if a method exists in a class
+(define method-exists?
+  (lambda (method-name methods)
+    (cond
+      ((null? methods) #f)
+      ((eq? method-name (caar methods)) #t)
+      (else (method-exists? method-name (cdr methods))))))
+
+; Evaluate a binary (or unary) operator
 (define eval-operator
-  (lambda (expr environment)
+  (lambda (expr environment class-context this-obj)
     (cond
-      ((eq? '! (operator expr)) (not (eval-expression (operand1 expr) environment)))
+      ((eq? '! (operator expr)) 
+       (not (eval-expression (operand1 expr) environment class-context this-obj)))
       ((and (eq? '- (operator expr)) (= 2 (length expr))) 
-       (- (eval-expression (operand1 expr) environment)))
-      (else (eval-binary-op expr (eval-expression (operand1 expr) environment) environment)))))
+       (- (eval-expression (operand1 expr) environment class-context this-obj)))
+      (else (eval-binary-op expr 
+                           (eval-expression (operand1 expr) environment class-context this-obj) 
+                           environment class-context this-obj)))))
 
-; Complete the evaluation of the binary operator by evaluating the second operand and performing the operation.
+; Complete the evaluation of the binary operator
 (define eval-binary-op
-  (lambda (expr op1value environment)
+  (lambda (expr op1value environment class-context this-obj)
     (cond
-      ((eq? '+ (operator expr)) (+ op1value (eval-expression (operand2 expr) environment)))
-      ((eq? '- (operator expr)) (- op1value (eval-expression (operand2 expr) environment)))
-      ((eq? '* (operator expr)) (* op1value (eval-expression (operand2 expr) environment)))
-      ((eq? '/ (operator expr)) (quotient op1value (eval-expression (operand2 expr) environment)))
-      ((eq? '% (operator expr)) (remainder op1value (eval-expression (operand2 expr) environment)))
-      ((eq? '== (operator expr)) (isequal op1value (eval-expression (operand2 expr) environment)))
-      ((eq? '!= (operator expr)) (not (isequal op1value (eval-expression (operand2 expr) environment))))
-      ((eq? '< (operator expr)) (< op1value (eval-expression (operand2 expr) environment)))
-      ((eq? '> (operator expr)) (> op1value (eval-expression (operand2 expr) environment)))
-      ((eq? '<= (operator expr)) (<= op1value (eval-expression (operand2 expr) environment)))
-      ((eq? '>= (operator expr)) (>= op1value (eval-expression (operand2 expr) environment)))
-      ((eq? '|| (operator expr)) (or op1value (eval-expression (operand2 expr) environment)))
-      ((eq? '&& (operator expr)) (and op1value (eval-expression (operand2 expr) environment)))
+      ((eq? '+ (operator expr)) 
+       (+ op1value (eval-expression (operand2 expr) environment class-context this-obj)))
+      ((eq? '- (operator expr)) 
+       (- op1value (eval-expression (operand2 expr) environment class-context this-obj)))
+      ((eq? '* (operator expr)) 
+       (* op1value (eval-expression (operand2 expr) environment class-context this-obj)))
+      ((eq? '/ (operator expr)) 
+       (quotient op1value (eval-expression (operand2 expr) environment class-context this-obj)))
+      ((eq? '% (operator expr)) 
+       (remainder op1value (eval-expression (operand2 expr) environment class-context this-obj)))
+      ((eq? '== (operator expr)) 
+       (isequal op1value (eval-expression (operand2 expr) environment class-context this-obj)))
+      ((eq? '!= (operator expr)) 
+       (not (isequal op1value (eval-expression (operand2 expr) environment class-context this-obj))))
+      ((eq? '< (operator expr)) 
+       (< op1value (eval-expression (operand2 expr) environment class-context this-obj)))
+      ((eq? '> (operator expr)) 
+       (> op1value (eval-expression (operand2 expr) environment class-context this-obj)))
+      ((eq? '<= (operator expr)) 
+       (<= op1value (eval-expression (operand2 expr) environment class-context this-obj)))
+      ((eq? '>= (operator expr)) 
+       (>= op1value (eval-expression (operand2 expr) environment class-context this-obj)))
+      ((eq? '|| (operator expr)) 
+       (or op1value (eval-expression (operand2 expr) environment class-context this-obj)))
+      ((eq? '&& (operator expr)) 
+       (and op1value (eval-expression (operand2 expr) environment class-context this-obj)))
       (else (myerror "Unknown operator:" (operator expr))))))
 
 ; Determines if two values are equal
@@ -403,7 +741,6 @@
     (if (and (number? val1) (number? val2))
         (= val1 val2)
         (eq? val1 val2))))
-
 
 ;-----------------
 ; HELPER FUNCTIONS
@@ -450,7 +787,6 @@
   (lambda (catch-statement)
     (car (operand1 catch-statement))))
 
-
 ;------------------------
 ; Environment/State Functions
 ;------------------------
@@ -495,12 +831,12 @@
       ((eq? var (car l)) #t)
       (else (exists-in-list? var (cdr l))))))
 
-; Looks up a value in the environment. If the value is a boolean, it converts our languages boolean type to a Scheme boolean type
+; Looks up a value in the environment
 (define lookup
   (lambda (var environment)
     (lookup-variable var environment)))
   
-; A helper function that does the lookup. Returns an error if the variable does not have a legal value
+; A helper function that does the lookup
 (define lookup-variable
   (lambda (var environment)
     (if (exists? var environment)
@@ -512,14 +848,16 @@
   (lambda (var environment)
     (cond
       ((null? environment) (myerror "error: undefined variable" var))
-      ((exists-in-list? var (variables (topframe environment))) (lookup-in-frame var (topframe environment)))
+      ((exists-in-list? var (variables (topframe environment))) 
+       (lookup-in-frame var (topframe environment)))
       (else (lookup-in-env var (cdr environment))))))
 
 ; Return the value bound to a variable in the frame
 (define lookup-in-frame
   (lambda (var frame)
     (cond
-      ((not (exists-in-list? var (variables frame))) (myerror "error: undefined variable" var))
+      ((not (exists-in-list? var (variables frame))) 
+       (myerror "error: undefined variable" var))
       (else (get-value (indexof var (variables frame)) (store frame))))))
 
 ; Get the location of a name in a list of names
@@ -537,14 +875,14 @@
       ((zero? n) (car l))
       (else (get-value (- n 1) (cdr l))))))
 
-; Adds a new variable/value binding pair into the environment.  Gives an error if the variable already exists in this frame.
+; Adds a new variable/value binding pair into the environment
 (define insert
   (lambda (var val environment)
     (if (exists-in-list? var (variables (car environment)))
         (myerror "error: variable is being re-declared:" var)
         (cons (add-to-frame var val (car environment)) (cdr environment)))))
 
-; Add a new variable/value pair to the frame.
+; Add a new variable/value pair to the frame
 (define add-to-frame
   (lambda (var val frame)
     (list (cons var (variables frame)) (cons val (store frame)))))
@@ -559,7 +897,6 @@
   (lambda (frame)
     (cadr frame)))
 
-
 ; Functions to convert the Scheme #t and #f to our languages true and false, and back.
 (define language->scheme
   (lambda (v) 
@@ -573,6 +910,8 @@
     (cond
       ((eq? v #f) 'false)
       ((eq? v #t) 'true)
+      ((and (list? v) (eq? (car v) 'object)) 
+       v) ; Keep objects as they are
       (else v))))
 
 ; Because the error function is not defined in R5RS scheme, I create my own:
@@ -590,26 +929,17 @@
                 (string-append str " " (format "~a" (car vals)))
                 (cdr vals)))))))
 
-(interpret "tests3/1.txt")
-(interpret "tests3/2.txt")
-(interpret "tests3/3.txt")
-(interpret "tests3/4.txt")
-(interpret "tests3/5.txt")
-(interpret "tests3/6.txt")
-(interpret "tests3/7.txt")
-(interpret "tests3/8.txt")
-(interpret "tests3/9.txt")
-(interpret "tests3/10.txt")
-(interpret "tests3/11.txt")
-(interpret "tests3/12.txt")
-(interpret "tests3/13.txt")
-(interpret "tests3/14.txt")
-(interpret "tests3/15.txt")
-(interpret "tests3/16.txt")
-(interpret "tests3/17.txt")
-(interpret "tests3/18.txt")
-(interpret "tests3/19.txt")
-(interpret "tests3/20.txt")
-;(interpret "tests3/21.txt")
-;(interpret "tests3/22.txt")
-;(interpret "tests3/23.txt")
+
+(interpret "tests4/1.txt" "A")
+(interpret "tests4/2.txt" "A")
+(interpret "tests4/3.txt" "A")
+;(interpret "tests4/4.txt" "A")
+;(interpret "tests4/5.txt")
+;(interpret "tests4/6.txt")
+;(interpret "tests4/7.txt")
+;(interpret "tests4/8.txt")
+;(interpret "tests4/9.txt")
+;(interpret "tests4/10.txt")
+;(interpret "tests4/11.txt")
+;(interpret "tests4/12.txt")
+;(interpret "tests4/13.txt")
